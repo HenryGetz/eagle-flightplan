@@ -1,0 +1,21 @@
+{
+ "errors": [
+  {
+   "message": "Cannot query field 'bogus' on type 'Teacher'.",
+   "locations": [
+    {
+     "line": 3,
+     "column": 5
+    }
+   ],
+   "path": [
+    "node",
+    "bogus"
+   ]
+  },
+  {
+   "message": "second error"
+  }
+ ],
+ "data": null
+}

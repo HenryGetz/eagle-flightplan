@@ -1,0 +1,47 @@
+{
+ "meetingTimes": {
+  "status": 200,
+  "ctype": "application/json;charset=UTF-8",
+  "body": "{\n  \"fmt\": \n  [\n    {\n      \"category\": \"01\",\n      \"class\": \"net.hedtech.banner.student.schedule.SectionSessionDecorator\",\n      \"courseReferenceNumber\": \"22445\",\n      \"faculty\": \n      [\n        {\n          \"bannerId\": \"9855\",\n          \"category\": \"01\",\n          \"class\": \"net.hedtech.banner.student.faculty.FacultyResultDecorator\",\n          \"courseReferenceNumber\": \"22445\",\n          \"displayName\": \"Smith, James\",\n          \"emailAddress\": \"jlsmith2@unwsp.edu\",\n          \"primaryIndicator\": true,\n          \"term\": \"202620\"\n        }\n      ],\n      \"meetingTime\": {\n        \"beginTime\": \"1245\",\n        \"building\": \"RIL\",\n        \"buildingDescription\": \"Riley\",\n        \"campus\": \"M\",\n        \"campusDescription\": \"Main Campus\",\n        \"category\": \"01\",\n        \"class\": \"net.hedtech.banner.general.overall.MeetingTimeDecorator\",\n        \"courseReferenceNumber\": \"22445\",\n        \"creditHourSession\": 4.0,\n        \"endDate\": \"05/13/2027\",\n        \"endTime\": \"1425\",\n        \"friday\": false,\n        \"hoursWeek\": 3.33,\n        \"meetingScheduleType\": \"LC\",\n        \"meetingType\": \"CLAS\",\n        \"meetingTypeDescription\": \"Class\",\n        \"monday\": false,\n        \"room\": \"R1332\",\n        \"saturday\": false,\n        \"startDate\": \"01/11/2027\",\n        \"sunday\": false,\n        \"term\": \"202620\",\n        \"thursday\": true,\n        \"tuesday\": true,\n        \"wednesday\": false\n      },\n      \"term\": \"202620\"\n    }\n  ]\n}"
+ },
+ "enrollment": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"enrollmentInfo\">\r\n    \r\n        <span class=\"status-bold\">Enrollment Actual:</span> <span\r\n                dir=\"ltr\">0</span><br/>\r\n        <span class=\"status-bold\">Enrollment Maximum:</span> <span\r\n                dir=\"ltr\">30</span><br/>\r\n        <span class=\"status-bold\">Enrollment Seats Available:</span> <span\r\n                dir=\"ltr\">30</span>  <br/>\r\n        <hr/>\r\n        <span class=\"status-bold\">Waitlist Capacity:</span> <span\r\n                dir=\"ltr\">5</span><br/>\r\n        <span class=\"status-bold\">Waitlist Actual:</span> <span\r\n                dir=\"ltr\">0</span><br/>\r\n        <span class=\"status-bold\">Waitlist Seats Available:</span> <span\r\n                dir=\"ltr\">5</span><br/>\r\n    \r\n    \r\n</section>"
+ },
+ "attributes": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"attributes\">\r\n    \r\n        \r\n            <div>\r\n                <span class='attribute-text'>Computing Data Math Sci Dept  CDMS\r\n                    <br/></span></div>\r\n        \r\n            <div>\r\n                <span class='attribute-text'>PSEO Eligible Course  PSCO\r\n                    <br/></span></div>\r\n        \r\n            <div>\r\n                <span class='attribute-text'>Eligble for TRAD block tuition  TRBK\r\n                    </span></div>\r\n        \r\n    \r\n\r\n    \r\n</section>"
+ },
+ "prereq": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\n<section aria-labelledby=\"preReqs\">\n    <h3>Catalog Prerequisites</h3>\n    \n        \n            <table class=\"cappPreqTable\">\n                <thead>\n                <tr>\n                    <th>Area Prerequisites</th>\n                </tr>\n                </thead>\n                <tbody>\n                <tr>\n                    <td>\n                        <strong>\n                            \n                                \n                                    <pre>Prerequisites:PQ for CYS2081\n</pre>\n                                \n                            \n                                \n                            \n                                \n                                    <pre>(\n Course or Test: COS: Computer Science 2015 \n Minimum Grade of D-\n May not be taken concurrently. </pre>\n                                \n                            \n                                \n                                    <pre>)\nor\n(\n Course or Test: COS: Computer Science 2112 \n Minimum Grade of D-\n May not be taken concurrently. </pre>\n                                \n                            \n                                \n                                    <pre>)</pre>\n                                \n                            \n                        </strong>\n                    </td>\n                </tr>\n                </tbody>\n            </table>\n        \n    \n    \n\n\n    \n</section>\n\n\n"
+ },
+ "coreq": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"coReqs\">\r\n    <h3>Corequisites</h3>\r\n    \r\n        No corequisite course information available.\r\n    \r\n    \r\n</section>"
+ },
+ "restrictions": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"restrictions\">\r\n\r\n    <div class=\"infoicon\"><span class=\"status-bold\">Not all restrictions are applicable.</span></div> <br/>\r\n    \r\n        \r\n            <span class=\"status-bold\">Must be enrolled in one of the following Levels:</span><br/>\r\n            \r\n                <span class=\"detail-popup-indentation\">Undergraduate (UG)</span><br/>\r\n            \r\n        \r\n        <br/>\r\n    \r\n        \r\n            <span class=\"status-bold\">Must be enrolled in one of the following Colleges:</span><br/>\r\n            \r\n                <span class=\"detail-popup-indentation\">Dual Enrollment (DE)</span><br/>\r\n            \r\n                <span class=\"detail-popup-indentation\">Traditional Undergraduate(TR)</span><br/>\r\n            \r\n        \r\n        <br/>\r\n    \r\n        \r\n            <span class=\"status-bold\">Cannot be enrolled in one of the following Attributes:</span><br/>\r\n            \r\n                <span class=\"detail-popup-indentation\">Early College Online Student (ECOL)</span><br/>\r\n            \r\n                <span class=\"detail-popup-indentation\">PSEO Online Student(PSEO)</span><br/>\r\n            \r\n        \r\n        <br/>\r\n    \r\n\r\n\r\n</section>\r\n"
+ },
+ "classDetails": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"classDetails\">\r\n    <span class=\"status-bold\">Associated Term:</span>Spring 2027 <br/>\r\n    <span class=\"status-bold\">CRN:</span><span\r\n        id=\"courseReferenceNumber\">22445</span><br/>\r\n\r\n    \r\n\r\n    <span class=\"status-bold\">Campus:</span>Main Campus <br/>\r\n\r\n    \r\n        <span class=\"status-bold\">Schedule Type:</span>\r\n        Lecture\r\n    \r\n    <br/>\r\n\r\n    \r\n        <span class=\"status-bold\">Instructional Method:</span>\r\n        Activity/Experience<br/>\r\n    \r\n\r\n    <span class=\"status-bold\">Section Number:</span>\r\n    <span id=\"sectionNumber\">01</span>\r\n    <br/>\r\n\r\n    <span class=\"status-bold\">Subject:</span>\r\n    <span id=\"subject\">CYS: Cyber Security</span>\r\n    <br/>\r\n    <span class=\"status-bold\">Course Number:</span>\r\n    <span id=\"courseNumber\" style=\"display:none;\">2081</span>\r\n    <span id=\"courseDisplay\">2081</span>\r\n    <br/>\r\n    <span class=\"status-bold\">Title:</span>\r\n    <span id=\"courseTitle\">Data Communications</span>\r\n    <br/>\r\n\r\n    <span class=\"status-bold\">Credit Hours:</span>\r\n    \r\n        4\r\n        <br>\r\n    \r\n\r\n    <span class=\"status-bold\">Grade Mode:</span>\r\n    \r\n        No Section specified grade mode, please see Catalog link below for more information.<br>\r\n    \r\n    \r\n</section>"
+ },
+ "courseDesc": {
+  "status": 200,
+  "ctype": "text/html;charset=UTF-8",
+  "body": "\r\n<section aria-labelledby=\"courseDescription\">\r\n    <!--display course description-->\r\n    (PQ: COS2015 or COS2112) This course is a comprehensive overview of the broad topic of data communications as the foundation for cybersecurity. Networking models, including ISO OSI and TCP/IP version 5, are used as a framework. Topics include data transmission, transmission media, network topologies, network cabling systems, IP and MAC addressing, TCP/IP protocol suite, local area networks (LANs), wide area networks (WANs), wireless networks, and network security. Students complete numerous practical laboratories using modern hardware and networking tools.<br/>\r\n    <!--if there is a section description, display the new label and the description-->\r\n    \r\n    <!--when there is no course or section description, provide the no information message-->\r\n    \r\n    \r\n</section>"
+ },
+ "linked": {
+  "status": 200,
+  "ctype": "application/json;charset=UTF-8",
+  "body": "{\n  \"linkedData\": \n  [\n  ]\n}"
+ }
+}
