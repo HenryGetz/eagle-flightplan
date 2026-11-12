@@ -1,32 +1,46 @@
-# Eagle Flightplan
+# Eagle Flightplan — course planning for UNW Eagles
 
-**Course planning for the UNW Eagles.**
+A course-planning toolkit for the University of Northwestern – St. Paul. It signs in to UNW's Banner 9
+Student Self-Service and Ellucian Degree Works audit, reads the degree audit and catalog, resolves
+remaining requirements against real sections, checks time conflicts, and builds term or multi-term plans
+using Rate My Professors ratings as a soft preference. The same domain layer is exposed as an
+`eagle-flightplan` command-line interface and a stdio MCP server for agents.
 
-A command-line and MCP client for planning courses at the University of
-Northwestern – St. Paul. It signs in to UNW's Banner 9 Student Self-Service and
-Ellucian Degree Works audit with an Entra ID + TOTP login, reads the degree
-audit and course catalog, resolves remaining requirements against real sections,
-checks time conflicts, and builds term or multi-term plans using Rate My
-Professors ratings as a soft preference. The same domain layer is exposed as
-an `eagle-flightplan` CLI and a stdio MCP server for agent use.
+This is an independent, unofficial project. It is not affiliated with, endorsed by, or supported by the
+University of Northwestern, Ellucian, or Rate My Professors. Course data and ratings can be wrong or
+stale; verify decisions with an advisor and the official UNW systems.
 
-This is an independent project. It is not affiliated with, endorsed by, or
-supported by the University of Northwestern, Ellucian, or Rate My Professors.
+## What it does
 
-## Requirements
+- Parses the Degree Works audit into requirement groups, blocks, course options, attributes, wildcards,
+  and credit pools.
+- Shows only the requirements that are still unmet, including pick-N progress, remaining credits, and
+  `shared_title_with` warnings for possible double-counting.
+- Searches a whole Banner term and filters sections by subject, number, title, instructor, attribute, or
+  availability.
+- Checks pairwise time conflicts with a half-open interval model, an ASCII week grid, and a
+  `grid_legend` that maps grid labels and overlap slugs to CRNs.
+- Looks up Rate My Professors ratings, keeping unrated instructors as `null` (unknown), never `0.0`.
+- Drafts a conflict-free term with pins, exclusions, minimum load, variable-credit hours, instructor
+  avoidance, and a roadmap across terms.
+- Reads Banner Plan Ahead worksheets and can create, add to, remove from, or delete them with enforced
+  confirmation.
+- Reads registration time-ticket windows and runs a dry-run registration preview. It does not register
+  from the MCP server.
 
-- **Python 3.11+** (3.11 and 3.12 are supported).
-- **A UNW account** with access to Banner 9 Student Self-Service and the Degree
-  Works dashboard.
-- **TOTP two-factor authentication.** The login driver generates the current
-  code from a shared secret. Push-notification-only accounts, or tenants that
-  require number matching without a "use a verification code" fallback, cannot
-  be automated.
-- Network access to `registration-ss.oci.unw.edu`,
-  `degreeaudit.oci.unw.edu`, `login.microsoftonline.com` and
-  `www.ratemyprofessors.com`.
+## Install
 
-## One-command install
+### Requirements
+
+- Python 3.11 or newer (3.11 and 3.12 are supported).
+- A UNW account with Banner 9 Self-Service and Degree Works access. Use your full address, for example
+  `you@students.unwsp.edu`.
+- TOTP two-factor authentication with a shared secret. Push-only or number-matching-only accounts cannot
+  be automated by the login driver.
+- Network access to `registration-ss.oci.unw.edu`, `degreeaudit.oci.unw.edu`,
+  `login.microsoftonline.com`, and `www.ratemyprofessors.com`.
+
+### One-command install
 
 macOS / Linux:
 
@@ -40,14 +54,15 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/HenryGetz/eagle-flightplan/main/bootstrap.ps1 | iex
 ```
 
-The bootstrap clones to `${EAGLE_FLIGHTPLAN_HOME:-$HOME/.eagle-flightplan}` (or the
-Windows equivalent), then runs the interactive installer. It attaches
-`/dev/tty` to the setup prompts when available. In automation or another context with no
-terminal, it refuses to start the interactive prompts and prints the checkout
-alternative; use the non-interactive command below instead. It installs Python
-dependencies and Playwright Chromium, writes `.env`, and optionally logs in.
+The bootstrap clones the project to `${EAGLE_FLIGHTPLAN_HOME:-$HOME/.eagle-flightplan}` (or the Windows
+equivalent), then runs the installer. It attaches `/dev/tty` to the setup prompts when a terminal is
+available. In a context with no terminal it stops with instructions instead of reading EOF forever.
 
-If you prefer a checkout:
+The installer writes `.env` with mode 600, installs the Python package, and downloads Playwright
+Chromium on first use (about 130 MB). Windows support is provided, but the Windows installer was not
+executed in this environment.
+
+### Manual checkout
 
 ```bash
 git clone https://github.com/HenryGetz/eagle-flightplan.git
@@ -55,67 +70,31 @@ cd eagle-flightplan
 ./install.sh          # or: sh install.sh
 ```
 
-After setup (from the project folder; Windows uses `.venv\Scripts\eagle-flightplan.exe`):
+On Windows:
 
-```bash
-.venv/bin/eagle-flightplan advise --term 202620
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-`advise` prints a shareable advising brief: remaining requirements, candidate
-sections, a conflict-free draft and (with `--roadmap`) the multi-term plan. It
-is name-free by default; `--no-pii` is accepted for scripts that want to be
-explicit about it.
+### Non-interactive setup
 
-Non-interactive install (never logs in): pipe the password and provide the
-other credentials; `--no-login` still writes `.env`:
+`--no-login` still writes `.env`, so credentials are still required. Pipe the password rather than
+relying on `getpass`:
 
 ```bash
 printf '%s\n' "$UNW_PASS" | .venv/bin/eagle-flightplan setup --yes --no-login \
   --password-stdin --user "$UNW_USER" --totp-secret "$UNW_TOTP_SECRET"
 ```
 
-## CLI
+The first Chromium download happens during setup. If setup is skipped, install it with:
 
-The current commands are listed below. Read-only planning commands beyond this
-set (profile, remaining requirements, candidates, ratings, conflicts, draft,
-roadmap, offering matrix) are available through the MCP server; see
-[`docs/mcp.md`](docs/mcp.md). Every command reads the session written by
-`login`; set `UNW_AUTO_LOGIN=0` to guarantee no command starts a browser login.
+```bash
+.venv/bin/python -m playwright install chromium
+```
 
-| command | what it does |
-| --- | --- |
-| `login [--force]` | Run the Entra ID + TOTP browser login and save the session state. |
-| `terms` | List Banner term codes and descriptions. |
-| `search [--subject S] [--course N] [--term CODE] [--limit N]` | Search one term's sections. |
-| `plans [--term CODE]` | List Banner Plan Ahead worksheets for one term (term-scoped). |
-| `audit [--unmet] [--json]` | Print the degree-audit groups, or all outstanding groups. |
-| `advise [--term CODE] [--out FILE] [--roadmap] [--max-credits N] [--json] [--no-pii] [--no-auto-login]` | Build the one-shot advising brief from live data. |
-| `setup [--yes] [--user EMAIL] [--totp-secret SECRET] [--password-stdin] [--no-login] [--register-mcp] [--force] [--root PATH]` | First-run wizard: install dependencies, write `.env` (mode 600), run doctor checks, optionally log in and register MCP. |
-| `windows [--term CODE] [--json]` | Show registration time-ticket windows parsed from Banner's eligibility text (read-only). |
-| `watch --term CODE [--interval N] [--json] [--until-open]` | Poll one term's eligibility and print changes (read-only). |
-| `snipe --term CODE [--plan NAME] [--crn CRN ...] [--mode window\|seats] [--offset N] [--interval N] [--live] [--dry-run/--no-dry-run] [--i-understand] [--allow-waitlist] [--probe] [--max-attempts N] [--timeout N]` | Targeted registration run. Dry-run by default; `--live` additionally requires `--i-understand` and typing the exact term; it never drops/withdraws. Banner is two-phase: it stages each CRN with Add, then clicks Save once; it never reports registered without the Save. **Unverified against a live window.** |
-| `plan-create NAME [--term CODE] [--yes]` | Create a plan worksheet. **Writes to Banner.** |
-| `plan-add PLAN_ID --crn CRN [--crn CRN ...] [--term CODE] [--yes] [--force]` | Add one or more sections to a plan. **Writes to Banner.** |
-| `plan-delete PLAN_ID [--term CODE] [--yes] [--force]` | Delete a plan; without `--force` a TTY asks for the exact name. **Writes to Banner.** |
-| `plans-json [--term CODE]` | Legacy raw plan dump; prefer `plans` or the MCP plan tools. |
+## Configure the MCP server
 
-## MCP server
-
-`eagle-flightplan-mcp` runs a stdio MCP server with 20 tools: session health, profile, audit,
-remaining requirements, terms, search, course detail, candidates, RMP ratings,
-conflicts, draft (with pins, minimum load and variable-credit hours), roadmap,
-offering matrix, term-scoped plan operations, a read-only registration preview
-and a read-only registration time-ticket window.
-
-Plan writes are protected by enforced confirmation, not prose. The four write
-tools require `confirm: true`; delete additionally requires `confirm_name`
-equal to the plan's exact name. A call without them returns
-`refused: true`, the intended effect and the current plan state, and performs no
-write. Successful writes return a before/after diff read back from Banner.
-
-Register it as a stdio server with an absolute path to `<repo>/.venv/bin/eagle-flightplan-mcp`
-(`<repo>\.venv\Scripts\eagle-flightplan-mcp.exe` on Windows). The shape is the same for
-omp, Claude Desktop and Cursor:
+The server is stdio-only and exposes 20 tools. Use the absolute path to the console script:
 
 ```json
 {
@@ -129,97 +108,192 @@ omp, Claude Desktop and Cursor:
 }
 ```
 
-Config locations: `~/.omp/agent/mcp.json` (omp), the Claude Desktop
-`claude_desktop_config.json`, and `~/.cursor/mcp.json` (Cursor). `eagle-flightplan setup --register-mcp` merges this entry into the clients it finds; it preserves
-other servers and backs up before writing. Restart the client after registering.
+On Windows the command is `C:\ABSOLUTE\PATH\TO\eagle-flightplan\.venv\Scripts\eagle-flightplan-mcp.exe`.
 
-See [`docs/mcp.md`](docs/mcp.md) for the tool table, real request/response
-examples, error contract and session-recovery procedure.
+The same block works for omp (`~/.omp/agent/mcp.json`), Claude Desktop (`claude_desktop_config.json`),
+and Cursor (`~/.cursor/mcp.json`). `eagle-flightplan setup --register-mcp` merges the entry into the clients
+it finds, preserves other servers, backs up before writing, and is idempotent.
 
-## What is verified vs unverified
+Restart the MCP client after installing or upgrading. A stale client process keeps the old code and
+cache format in memory.
 
-| area | status |
+### Key tools
+
+- `unw_session` — live authentication check, state-file age, cookie counts (never values), and repair
+  hints.
+- `unw_profile`, `unw_audit`, `unw_remaining` — identity, full requirement tree, and unmet requirements.
+- `unw_search`, `unw_course` — term sections and one-CRN detail.
+- `unw_candidates` — requirement-to-section candidates. `open_only=true`, `compact=true`, and `limit=N`
+  keep broad queries manageable.
+- `unw_ratings` — batch RMP lookup with 7-day cache and no negative caching.
+- `unw_conflicts` — pairwise conflicts, ASCII grid, and `grid_legend`.
+- `unw_plan_draft` — conflict-free draft with `max_credits`, `min_credits`,
+  `required_crns`/`required_courses`, `exclude_crns`/`exclude_courses`, `avoid_instructors`,
+  `exclude_arrangement`, and `hours` (CRN-to-credit-hours). Pins hard-fail with `ok: false` and
+  `pin_errors`; the partial draft is still returned.
+- `unw_roadmap` — multi-term plan. Pins are draft-only and are not accepted here.
+- `unw_offering_matrix` — observed fall/spring/summer offering patterns.
+- `unw_registration_window` — read-only time-ticket window(s), parsed from Banner's eligibility prose.
+- `unw_register_preview` — DRY RUN ONLY: eligibility, seats, conflicts, and prerequisite checks; never
+  POSTs add/drop/register.
+- `unw_banner_plans`, `unw_banner_plan_create`, `unw_banner_plan_add`, `unw_banner_plan_remove`,
+  `unw_banner_plan_delete` — term-scoped Plan Ahead worksheets. The four write tools require
+  `confirm=true`; delete also requires the exact plan name.
+
+Every tool returns JSON beginning with `"ok": true` or `"ok": false` plus an `error`/`hint`. Plan-write
+success responses include a before/after diff read back from Banner.
+
+## Agent workflow
+
+Start with session health, not with the audit:
+
+```text
+unw_session()
+```
+
+- `authenticated: true` — proceed.
+- `authenticated: false` and `degraded: true` — cached state exists but the live check failed. Try one
+  read tool (`unw_profile` or `unw_terms`) before asking for a login; read-only tools may still work.
+- `authenticated: false` and `degraded: false` — no state; use the returned `fix_command` before Banner
+  work.
+- Stop on `AuthError`/`SessionExpiredError`, or before any Banner plan write.
+
+Then gather context and plan:
+
+```text
+unw_profile()
+unw_remaining()
+unw_plan_draft(term="202620", max_credits=16, min_credits=12,
+               required_crns=["CRN1"], hours={"CRN2": 2})
+unw_conflicts(term="202620", crns=["CRN1", "CRN2"])
+unw_ratings(names=["Last, First"])
+unw_banner_plans(term="202620")
+```
+
+Report the ASCII grid, a one-line rationale per pick, `unverified` prerequisites, closed/not-yet-open
+sections, and any discrepancy between the audit and the plan. Never claim two sections are conflict-free
+without running `unw_conflicts` on the final CRN set. Never claim a student has registered: the MCP
+server has no registration write.
+
+## CLI
+
+Run commands from the project folder as `.venv/bin/eagle-flightplan ...` (Windows:
+`.venv\Scripts\eagle-flightplan.exe`).
+
+| Command | What it does |
+| --- | --- |
+| `setup` | First-run wizard: dependencies, Chromium, `.env` (mode 600), doctor checks, optional login and MCP registration. |
+| `login [--force]` | Entra ID + TOTP browser login; writes the replayable session state. |
+| `advise --term CODE` | One-shot advising brief: remaining requirements, candidates, draft, optional roadmap. |
+| `audit [--unmet] [--json]` | Print all audit groups or only outstanding ones. |
+| `terms`, `search`, `plans` | Read-only term, section, and Plan Ahead listings. |
+| `windows --term CODE [--json]` | Registration time-ticket windows parsed from Banner's eligibility text. |
+| `watch --term CODE` | Poll eligibility and print changes; `--until-open` exits when it flips. |
+| `snipe --term CODE ...` | Targeted registration run (see below). CLI only. |
+| `plan-create NAME` | Create a Plan Ahead worksheet. **Writes to Banner.** |
+| `plan-add PLAN_ID --crn CRN` | Add a section or course to a worksheet. **Writes to Banner.** |
+| `plan-delete PLAN_ID` | Delete a worksheet; an exact typed name is required on a TTY. **Writes to Banner.** |
+
+### `snipe` and registration
+
+`snipe` is CLI-only, dry-run by default, and never drops or withdraws. Live mode requires both
+`--i-understand` and the exact term code typed on stdin. Banner's registration UI is two-phase: Add/CRN
+**stages** a pending row, and Save commits the batch. The runner therefore stages each target, then
+clicks Save exactly once; it never reports `registered` from a staging message. Missing Save controls
+return `staged_not_committed`, unclear Save results return `save_unknown`, authorization or OLR popups
+return `authorization_required`, and unclear staging returns `stage_unknown` without clicking Save.
+
+Live registration remains unverified. Spring 2027 currently returns `"Term not eligible for
+registration"`; every non-probe snipe run checks eligibility first and stops with `not_eligible` before
+opening the registration UI. Use `eagle-flightplan windows --term 202620` or `unw_registration_window` to see
+the current text.
+
+## What is verified vs not
+
+| Area | Status |
 | --- | --- |
 | Entra ID + TOTP login, cookie replay, re-login | Verified live |
-| Term list, class search, section detail, term snapshots | Verified live (seven terms) |
-| Degree Works audit retrieval/parsing, profile, unmet requirements | Verified live |
-| Rate My Professors search and name matching (school 706) | Verified live; coverage varies by professor |
-| Conflict checking, draft, roadmap, offering matrix | Offline tests plus live snapshots |
-| Banner plan list/read and plan lifecycle | Verified live earlier on a throwaway plan |
-| MCP plan-write confirmation/refusal and add diff | Verified with a mocked Banner transport; not re-run against live plans |
-| Registration add/drop/register/withdraw | Unverified; deliberately not implemented |
+| Term list, class search, section detail, term snapshots | Verified live |
+| Degree Works audit parsing, profile, unmet requirements | Verified live |
+| Rate My Professors search and name matching | Verified live; coverage varies |
+| Conflict checks, draft, roadmap, offering matrix | Offline tests plus live snapshots |
+| Plan Ahead list/read and plan lifecycle | Verified live earlier on a throwaway plan |
+| MCP plan-write guards and read-back diff | Tested with a mocked Banner transport |
+| Registration add/drop/register/withdraw | **Not live-verified; not implemented in MCP** |
+| Waitlist/drop request shapes | **Not verified** |
+| Holds | **Unknown/null; no mapped endpoint** |
+| Corequisite and linked-lab enforcement | **Not enforced by the planner** |
+| Roadmap pins | **Draft-only; `unw_roadmap` does not accept pins** |
+| Plan credit-hours writes | **Not supported** |
 
-## Safety model
+## Data and safety
 
-- **Credentials stay local.** `UNW_USER`, `UNW_PASS` and `UNW_TOTP_SECRET` live
-  only in `.env` (mode 600, gitignored). No code hardcodes them and no command
-  prints them.
-- **The session state is a secret.** `.state/unw_state.json` is a replayable
-  cookie jar for Banner, Entra ID and Degree Works. It is gitignored and must not
-  be copied into tickets, chat or commits. Overwrite it with
-  `eagle-flightplan login --force` if exposed.
-- **No registration writes by default.** The MCP server never registers; only
-  the explicit `eagle-flightplan snipe` command can submit, and only with `--live`
-  plus `--i-understand` plus typing the exact term code on stdin. It is
-  browser-driven, dry-run by default, never drops/withdraws, and has not been
-  validated against a live registration window. `windows`/`watch` and the MCP
-  registration preview are read-only.
-- **Plan writes are explicit.** CLI plan writes require `--yes` (and an exact
-  typed plan name for deletes); MCP writes require `confirm=true` and, for
-  delete, the exact `confirm_name`. They never run during read commands and
-  never touch anything except Plan Ahead worksheets.
-- **Captures are never committed.** `.state/`, `captures/`, `.venv/` and caches
-  are gitignored. Capture files may contain course data, screenshots or redacted
-  request logs; keep them local.
-- **Be polite.** The client reuses one session and caches term snapshots for 15
-  minutes. Do not run a second browser against the same session while an HTTP
-  call is in flight; Banner invalidates the old session.
+- `.env` contains `UNW_USER`, `UNW_PASS`, and `UNW_TOTP_SECRET`. It is mode 600 and gitignored. Never
+  commit, paste, or log it.
+- `.state/unw_state.json` is a replayable cookie jar for Banner, Entra ID, and Degree Works. Treat it as
+  a password; it is gitignored.
+- `captures/` can contain course data, screenshots, or request transcripts. It is gitignored; review
+  before sharing.
+- `EAGLE_FLIGHTPLAN_HOME` controls where the bootstrap clones the project and the writable
+  data root for wheel/installed runs, including `.env`, `.state/`, and caches.
+- This is one student per checkout. Settings and state are process-wide, not multi-user.
+- Be polite: reuse the session, respect rate limits, and keep the 15-minute term snapshot cache and
+  7-day RMP cache. Do not run a second browser against the same session while an HTTP call is in flight.
+- The MCP server never registers. The only Banner writes are Plan Ahead worksheet operations, guarded by
+  `confirm=true` and (for deletion) an exact `confirm_name`.
 
-## Known limitations
+## Troubleshooting
 
-- **Registration is browser-driven and unverified.** The direct add/drop
-  endpoints were never observed, so `snipe` drives the UI. It defaults to a dry
-  run, requires explicit live authorization, and has not been executed against
-  an eligible term. The MCP server has no registration write tool.
-- **Filtering is client-side.** Banner ignores `txt_attribute`,
-  `txt_instructor`, `chk_open_only` and similar parameters on this deployment, so
-  the server fetches a whole-term snapshot (cached for 15 minutes) and filters
-  locally. Seat counts are a snapshot, not live guarantees.
-- **Plans are term-scoped and bounded.** Plan Ahead only works for selectable
-  terms; terms beyond Summer 2027 are visible in the catalog but cannot be
-  planned. An empty plan list means "no plans for this term".
-- **RMP coverage is thin.** Many faculty have no Rate My Professors record or
-  very few ratings. Unrated means unknown, not bad; n<3 is weak evidence.
-- **Offering patterns are inferred.** "Fall-only" or "every-term" comes from
-  seven observed catalog terms, not a registrar guarantee.
-- **Prerequisite parsing is heuristic.** Banner's nested `and`/`or` prerequisite
-  text and grade/test clauses are parsed approximately; confirm with an advisor.
-- **One student per checkout.** Settings and state are process-wide, not
-  multi-user.
+**Session expired**
 
-## Porting
+```bash
+.venv/bin/eagle-flightplan login --force
+```
 
-The tenant, Banner host, Degree Works host/screen code, RMP school id, term-code
-convention, attribute vocabulary and login selectors are UNW-specific.
-[`docs/porting.md`](docs/porting.md) lists every constant/function to change and
-the tests to add. Contribution rules, including the fixture-scrubbing procedure,
-are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+The packaged command also works as `.venv/bin/python -m eagle_flightplan.cli login --force`.
 
-## Repository layout
+**Piped installer has no terminal**
 
-| path | contents |
-| --- | --- |
-| `src/eagle_flightplan/` | Library: `auth`, `audit/`, `banner/`, `catalog`, `planner`, `schedule`, `rmp/`, `report`, `cli`, `mcp_server`. |
-| `docs/` | Login, Banner API, audit, planning, RMP, MCP, porting and an index. |
-| `scripts/` | Login, probe, draft, advising artifacts, RMP probe and MCP smoke test. |
-| `tests/` | Offline pytest suite, hermetic MCP stdio test and scrubbed fixtures. |
-| `pyproject.toml` | Package metadata, dependencies, Ruff, coverage, pytest and entry points. |
+The bootstrap cannot read credential prompts from a script pipe. Run the installer from a terminal, or
+use the non-interactive command with `--yes --no-login --password-stdin` and a password source. On
+Windows, run `install.ps1` from PowerShell rather than through a non-interactive host.
 
-## Disclaimer
+**Stale MCP client after upgrade**
 
-This is unofficial software. Use it only with your own account, at your own
-risk. Course data, audit results and instructor ratings can be wrong or stale;
-verify everything with your advisor and the official UNW systems before making
-enrollment decisions. Respect the terms of service and rate limits of UNW,
-Ellucian and Rate My Professors. The project is licensed under the MIT License
-(see [`LICENSE`](LICENSE)).
+Restart the client/server. Old processes can keep old code and the old ratings cache in memory.
+
+**Wheel/installed run cannot find `.env` or state**
+
+Set `EAGLE_FLIGHTPLAN_HOME=/path/to/data` before running. The installed package uses that as its writable root
+instead of the interpreter's `site-packages` directory.
+
+**`unw_session` says `degraded: true`**
+
+The state file exists but the live check failed. Try `unw_profile` or `unw_terms` once; if they also
+fail with an auth/session error, run the repair command. Do not attempt a plan write until the session
+is repaired.
+
+**A course prerequisite is `unverified`**
+
+Banner's prerequisite text could not be fetched or parsed. The section may still be placed, with
+`prereq_unverified: true`, but confirm it with an advisor or the department before registering.
+
+## Development
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q
+.venv/bin/ruff check .
+```
+
+Tests are offline by default; the network-marked RMP tests opt in with `RMP_RUN_NETWORK=1`.
+
+## Repository and license
+
+- Repository: <https://github.com/HenryGetz/eagle-flightplan>
+- License: MIT (see `LICENSE`)
+
+Use this software only with your own UNW account, at reasonable request rates, and in accordance with
+UNW, Ellucian, and Rate My Professors terms of service. The project is unofficial, comes with no
+warranty, and should not be used as the sole source of enrollment decisions.
