@@ -152,7 +152,7 @@ def windows(
     if json_out:
         console.print_json(json.dumps([item.model_dump(mode="json") for item in items]))
         return
-    table = Table("term", "eligible", "opens", "closes", "countdown", "reason")
+    table = Table("term", "eligible", "opens", "closes", "countdown", "standing", "source", "reason")
     for item in items:
         table.add_row(
             item.term,
@@ -160,7 +160,9 @@ def windows(
             item.start.isoformat(timespec="minutes") if item.start else "-",
             item.end.isoformat(timespec="minutes") if item.end else "-",
             "now" if item.eligible else countdown(item.opens_in_seconds),
-            item.reason[:80],
+            item.standing or "-",
+            item.source,
+            item.reason[:60],
         )
     console.print(table)
 
@@ -181,15 +183,25 @@ def watch(
     try:
         while True:
             current = registration_window(term)
-            signature = (current.eligible, current.start, current.end, current.reason)
+            signature = (
+                current.eligible,
+                current.start,
+                current.end,
+                current.standing,
+                current.source,
+                current.reason,
+            )
             if signature != last:
                 if json_out:
                     console.print_json(json.dumps(current.model_dump(mode="json")))
                 else:
                     state = "ELIGIBLE" if current.eligible else "waiting"
                     when = current.start.isoformat(timespec="minutes") if current.start else "unknown"
+                    standing = f" · standing {current.standing}" if current.standing else ""
                     console.print(
-                        f"{term}: {state} · opens {when} · {countdown(current.opens_in_seconds)} · {current.reason[:100]}"
+                        f"{term}: {state} · opens {when} · "
+                        f"{countdown(current.opens_in_seconds)}{standing} · "
+                        f"{current.source} · {current.reason[:100]}"
                     )
                 last = signature
             if until_open and current.eligible:
@@ -214,8 +226,11 @@ def snipe(
     probe: bool = typer.Option(False, "--probe", help="Only verify the registration page and selectors."),
     max_attempts: int = typer.Option(5, "--max-attempts", help="Retries for a blank/loading stage only (not for unclear staging)."),
     timeout: int = typer.Option(3600, "--timeout", help="Hard timeout in seconds."),
+    prewarm: int = typer.Option(30, "--prewarm", help="Seconds before the window to launch/pre-warm the browser."),
+    poll: int = typer.Option(5, "--poll", help="Eligibility poll interval in seconds near the window."),
 ) -> None:
     """Targeted registration run (dry-run by default; never drops)."""
+    from .registration import countdown
     from .registration import window as registration_window
     from .snipe import (
         SafetyError,
@@ -241,14 +256,21 @@ def snipe(
         probe=probe,
         max_attempts=max_attempts,
         timeout_seconds=timeout,
+        prewarm_seconds=max(0, prewarm),
+        poll_seconds=max(1, poll),
     )
     table = Table("order", "CRN", "course", "priority", "credits")
     for index, target in enumerate(targets, start=1):
         table.add_row(str(index), target.crn, target.course, target.priority, f"{target.credits:g}" if target.credits else "-")
     console.print(table)
     current = registration_window(term)
+    when = current.start.isoformat(timespec="minutes") if current.start else "unknown"
+    until = current.end.isoformat(timespec="minutes") if current.end else "unknown"
+    standing = f" · standing {current.standing}" if current.standing else ""
     console.print(
-        f"Term {term}: {'ELIGIBLE' if current.eligible else 'not eligible'} · {current.reason[:120]}"
+        f"Term {term}: {'ELIGIBLE' if current.eligible else 'not eligible'} · "
+        f"opens {when} · closes {until} · {countdown(current.opens_in_seconds)}"
+        f"{standing} · {current.source} · {current.reason[:100]}"
     )
     console.print(f"Mode: {options.mode} · {'PROBE' if probe else ('LIVE' if live else 'DRY RUN')}")
     if live and not probe:

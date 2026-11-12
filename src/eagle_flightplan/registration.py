@@ -1,10 +1,18 @@
 """Registration time-ticket detection (read-only).
 
-Banner exposes the window only through the registration eligibility payload:
-``POST /ssb/term/search?mode=registration`` returns ``studentEligValid`` and
-``studentEligFailures``. The failures carry the window in prose (e.g. "You can
-register from 04/20/2026 08:30 AM to 10/28/2026 11:59 PM"). We parse that text
-into aware America/Chicago datetimes and never invent a window that is not there.
+Two Banner sources are parsed, in order:
+
+1. ``POST /ssb/term/search?mode=registration`` — ``studentEligValid`` plus
+   ``studentEligFailures`` prose (e.g. "You can register from 04/20/2026 08:30 AM
+   to 10/28/2026 11:59 PM"). This is the eligibility answer.
+2. ``GET /ssb/prepareRegistration/prepareRegistration`` — the server-rendered
+   *Prepare for Registration* page. For a future term Banner still says "Term not
+   eligible for registration", but this page already shows the assigned personal
+   ticket ("Please register within these times: ..."). It never makes a term
+   eligible; it only supplies the window.
+
+All datetimes are aware America/Chicago. A window is never invented: if neither
+source contains one, ``start`` stays ``None`` and the verbatim Banner text is kept.
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ from datetime import datetime
 from typing import Iterable, Literal
 from zoneinfo import ZoneInfo
 
+from bs4 import BeautifulSoup
 from pydantic import BaseModel
 
 from .banner.ssb import SSBClient
@@ -23,6 +32,14 @@ TZ = ZoneInfo(TIMEZONE)
 
 DATE_PAIR = re.compile(
     r"(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+(?P<time>\d{1,2}:\d{2}\s*(?:AM|PM))",
+    re.IGNORECASE,
+)
+
+#: The Prepare for Registration page renders the window in its own paragraph.
+PREPARE_WINDOW = re.compile(
+    r"Please register within these times:\s*"
+    r"(?P<start>\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM))\s*-\s*"
+    r"(?P<end>\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM))",
     re.IGNORECASE,
 )
 
@@ -44,7 +61,11 @@ class RegistrationWindow(BaseModel):
     reason: str = ""
     raw_text: str = ""
     timezone: str = TIMEZONE
-    source: str = "POST /ssb/term/search?mode=registration"
+    source: Literal["banner_term", "banner_prepare"] = "banner_term"
+    standing: str | None = None
+    institution_hours: int | None = None
+    transfer_hours: int | None = None
+    time_ticket_text: str = ""
     parse_status: Literal["parsed", "no_ticket", "not_eligible", "unknown"] = "unknown"
 
     @property
@@ -54,10 +75,13 @@ class RegistrationWindow(BaseModel):
         return (self.start - datetime.now(TZ)).total_seconds()
 
 
+def _parse_stamp(stamp: str) -> datetime:
+    normalized = re.sub(r"\s+", " ", stamp).strip().upper()
+    return datetime.strptime(normalized, "%m/%d/%Y %I:%M %p").replace(tzinfo=TZ)
+
+
 def _parse_pair(match: re.Match[str]) -> datetime:
-    time_text = re.sub(r"\s+", " ", match.group("time")).upper()
-    stamp = match.group("date") + " " + time_text
-    return datetime.strptime(stamp, "%m/%d/%Y %I:%M %p").replace(tzinfo=TZ)
+    return _parse_stamp(match.group("date") + " " + match.group("time"))
 
 
 def parse_failures(term: str, failures: Iterable[str], eligible: bool) -> RegistrationWindow:
@@ -105,13 +129,102 @@ def parse_failures(term: str, failures: Iterable[str], eligible: bool) -> Regist
     )
 
 
+def parse_prepare_html(html: str, term: str = "") -> RegistrationWindow:
+    """Parse the *Prepare for Registration* HTML for the personal ticket.
+
+    The HTML is never stored; only the ticket text, window, standing and hours are
+    returned. A page without a ticket is not an error: ``start`` stays ``None``
+    and ``parse_status`` is ``no_ticket``/``unknown``.
+    """
+    soup = BeautifulSoup(html or "", "lxml")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    text = " ".join(soup.get_text(" ", strip=True).split())
+
+    window_match = PREPARE_WINDOW.search(text)
+    standing_match = re.search(
+        r"class standing for registration purposes is ([A-Za-z]+)", text, re.IGNORECASE
+    )
+    hours_match = re.search(
+        r"Institution Hours:\s*(\d+),\s*Transfer Hours:\s*(\d+)", text, re.IGNORECASE
+    )
+    ticket_match = re.search(r"Time tickets?[^.]*\.", text, re.IGNORECASE)
+
+    start = _parse_stamp(window_match.group("start")) if window_match else None
+    end = _parse_stamp(window_match.group("end")) if window_match else None
+    time_ticket_text = ticket_match.group(0).strip() if ticket_match else ""
+    if window_match:
+        status: Literal["parsed", "no_ticket", "unknown"] = "parsed"
+        raw_text = window_match.group(0)
+        reason = window_match.group(0)
+    elif time_ticket_text:
+        status = "no_ticket"
+        raw_text = time_ticket_text
+        reason = time_ticket_text
+    else:
+        status = "unknown"
+        raw_text = ""
+        reason = "Prepare for Registration page had no time-ticket text"
+
+    return RegistrationWindow(
+        term=term,
+        eligible=False,
+        start=start,
+        end=end,
+        reason=reason,
+        raw_text=raw_text,
+        source="banner_prepare",
+        standing=standing_match.group(1) if standing_match else None,
+        institution_hours=int(hours_match.group(1)) if hours_match else None,
+        transfer_hours=int(hours_match.group(2)) if hours_match else None,
+        time_ticket_text=time_ticket_text,
+        parse_status=status,
+    )
+
+
 def window(term: str, *, ssb: SSBClient | None = None) -> RegistrationWindow:
-    """Bind a term for registration and parse its eligibility window."""
+    """Bind a term for registration and resolve its personal window.
+
+    ``term/search`` supplies eligibility. When it has no window (the normal case
+    for a future term), the Prepare for Registration page supplies the assigned
+    ticket without changing ``eligible``.
+    """
     client = ssb or SSBClient()
     payload = client.set_term(term, mode="registration")
     failures = payload.get("studentEligFailures") or []
     eligible = bool(payload.get("studentEligValid"))
-    return parse_failures(term, failures, eligible)
+    result = parse_failures(term, failures, eligible)
+    if result.start is not None:
+        return result
+
+    try:
+        html = client.prepare_registration(term)
+    except Exception as exc:
+        return result.model_copy(
+            update={"reason": f"{result.reason} | prepare page unavailable: {type(exc).__name__}"}
+        )
+
+    prepared = parse_prepare_html(html, term)
+    update: dict[str, object] = {
+        "standing": prepared.standing,
+        "institution_hours": prepared.institution_hours,
+        "transfer_hours": prepared.transfer_hours,
+        "time_ticket_text": prepared.time_ticket_text,
+    }
+    if prepared.start is not None:
+        update.update(
+            {
+                "start": prepared.start,
+                "end": prepared.end,
+                "parse_status": "parsed",
+                "source": "banner_prepare",
+                "raw_text": " | ".join(
+                    part for part in (result.raw_text, prepared.raw_text) if part
+                ),
+                "reason": f"{result.reason}; ticket from prepareRegistration",
+            }
+        )
+    return result.model_copy(update=update)
 
 
 def windows(terms: Iterable[str] | None = None, *, ssb: SSBClient | None = None) -> list[RegistrationWindow]:

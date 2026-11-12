@@ -2150,7 +2150,12 @@ def registration_preview_payload(
 # registration readiness (read-only)
 # --------------------------------------------------------------------------- #
 def registration_window_payload(term: str | None = None) -> dict:
-    """Read-only time-ticket window(s) from Banner's registration eligibility text."""
+    """Read-only personal time-ticket window(s) from Banner.
+
+    ``term/search`` supplies eligibility; when it has no window, the Prepare for
+    Registration page supplies the assigned future ticket. The latter never makes
+    a term eligible.
+    """
     from .registration import countdown
     from .registration import window as registration_window
 
@@ -2211,9 +2216,13 @@ def registration_window_payload(term: str | None = None) -> dict:
         "windows": rows,
         "note": (
             "READ-ONLY: parses Banner's registration eligibility prose "
-            "(POST /term/search?mode=registration) into America/Chicago datetimes. "
-            "It never registers, adds, drops or withdraws. parse_status=unknown means "
-            "Banner's text was not understood; report raw_text verbatim."
+            "(POST /term/search?mode=registration) and, when that has no window, the "
+            "server-rendered Prepare for Registration page "
+            "(GET /ssb/prepareRegistration/prepareRegistration) into America/Chicago "
+            "datetimes. eligible=false with a start means the ticket is assigned but "
+            "the window is not open yet. It never registers, adds, drops or withdraws. "
+            "parse_status=unknown means Banner's text was not understood; report "
+            "raw_text verbatim."
         ),
     }
 
@@ -2590,8 +2599,10 @@ def unw_registration_window(term: str | None = None) -> dict:
     term's window; without it, returns the configured current term and the next
     selectable term. Each row carries Banner's verbatim eligibility failure text,
     parse_status (parsed/no_ticket/not_eligible/unknown), America/Chicago
-    start/end, seconds until opening and a countdown. It NEVER registers, adds,
-    drops or withdraws; parse_status=unknown must be reported from raw_text."""
+    start/end, standing, source (banner_term/banner_prepare), seconds until
+    opening and a countdown. A future ticket can exist while eligible=false.
+    It NEVER registers, adds, drops or withdraws; parse_status=unknown must be
+    reported from raw_text."""
     return _safe(registration_window_payload, term)
 
 

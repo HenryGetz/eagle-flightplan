@@ -10,6 +10,7 @@ path                             verb  purpose
 ===============================  ====  ===========================================
 ``/classSearch/getTerms``        GET   selectable terms
 ``/term/search?mode=<mode>``     POST  set the session term; returns eligibility
+``/prepareRegistration/prepareRegistration`` GET server-rendered personal time ticket
 ``/term/saveTerm?mode=<mode>``   POST  persist the term for the session
 ``/searchResults/searchResults`` GET   class search (see note on filters)
 ``/searchResults/getFacultyMeetingTimes``  GET  meeting times (JSON)
@@ -252,6 +253,28 @@ class SSBClient:
         payload = self._json(response, "/term/search")
         self._term = term
         return TermEligibility(payload)
+
+    def prepare_registration(self, term: str | None = None) -> str:
+        """Server-rendered *Prepare for Registration* page for ``term``.
+
+        This is a GET; it never adds, drops or registers. The page is the only
+        observed source that shows a student's *future* time ticket while
+        ``POST /term/search?mode=registration`` still says "Term not eligible for
+        registration". It requires the term to be bound in the session, so this
+        binds it in registration mode first and restores the previous term when
+        practical. The HTML is returned to the caller and never persisted here.
+        """
+        previous = self._term
+        if term is not None and self._term != term:
+            self.set_term(term, mode="registration")
+        try:
+            return self._get_html("/prepareRegistration/prepareRegistration", {})
+        finally:
+            if previous is not None and previous != term:
+                try:
+                    self.set_term(previous, mode="search")
+                except Exception:
+                    logger.info("could not restore Banner term %s", previous)
 
     def require_term(self, term: str | None = None) -> str:
         resolved = term or self._term

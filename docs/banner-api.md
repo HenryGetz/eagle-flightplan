@@ -71,6 +71,33 @@ Codes are `YYYY` + season (`10` fall, `20` spring, `30` summer) + `0`, i.e.
 
 `POST /ssb/term/saveTerm?mode=<mode>` persists the same selection.
 
+## Prepare for Registration (personal future time ticket)
+
+`GET /ssb/prepareRegistration/prepareRegistration` renders the selected term's
+registration status server-side. It requires the term to be bound first
+(`POST /ssb/term/search?mode=registration&term=202620`); the term may not be
+"open" in the picker yet.
+
+For Spring 2027 (`202620`) on 2026-11-12, while `term/search` returned
+`"Term not eligible for registration"`, this page already showed:
+
+```html
+<div class="reg-status-error">
+  <p class='inline-display'>Time tickets do not allow registration at this time.</p>
+  <p class='inline-display'>Please register within these times:</p>
+  <p class='inline-display'>11/16/2026 08:30 AM - 03/22/2027 11:59 PM</p>
+</div>
+...
+<p class='inline-display'>You have Earned Hours for Level: Undergraduate,
+   Institution Hours: 70, Transfer Hours: 16</p>
+<p class='inline-display'>Your class standing for registration purposes is Senior</p>
+```
+
+This is the authoritative **personal** window before eligibility opens. It is a
+GET; it never adds/drops/registers and the HTML must not be persisted (student ID,
+holds, curriculum). `SSBClient.prepare_registration(term)` binds the term, fetches
+the page and restores the previous term when practical.
+
 ## Class search
 
 `GET /ssb/searchResults/searchResults`

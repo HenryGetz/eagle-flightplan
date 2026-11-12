@@ -82,10 +82,26 @@ All notable changes to this project are documented here. The format follows
   hard-coded fallback.
 - `include_summer` carries spring selections into the summer prerequisite set.
 
+### Added
+
+- Registration windows now use Banner's server-rendered Prepare for Registration
+  page (`GET /ssb/prepareRegistration/prepareRegistration`) when
+  `term/search?mode=registration` has no window. A future personal ticket is
+  returned as `start`/`end` with `eligible=false`, `source=banner_prepare`,
+  `standing`, earned hours and `time_ticket_text`, without claiming eligibility.
+  Verified for Spring 2027: 2026-11-16 08:30 → 2027-03-22 23:59 America/Chicago,
+  standing Senior/70+16 hours.
+- `snipe --mode window --live` pre-warms at `start - --prewarm` (default 30 s),
+  polls eligibility every `--poll` seconds (default 5 s), selects the term
+  (`#txt_term`/select2, `#term-go`) and only then runs the existing two-phase
+  Add/Save loop. An alternate PIN returns `alternate_pin_required` and is never
+  guessed. Dry-run reports the known window and targets without waiting for hours.
+
 ### Unverified
 
-- The new MCP paths are covered by offline tests only; `unw_registration_window`
-  and plan-add prerequisite refusal were not exercised against live Banner.
+- `unw_registration_window` was exercised live against Banner on 2026-11-12
+  (including the Spring 2027 prepare ticket); plan-add prerequisite refusal was
+  not. The live `select_term`/Add/Save path remains unexercised.
 - `snipe` is offline-tested only. The literal stage/Save URLs, Save request body,
   Save response, waitlist commit path and separate validate endpoint are
   server-rendered/not proven; no live registration write was run.

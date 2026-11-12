@@ -26,6 +26,7 @@ from eagle_flightplan.snipe import (
     execute_targets,
     probe_page,
     resolve_targets,
+    select_term,
 )
 
 
@@ -362,3 +363,46 @@ def test_crn_pending_schedule_row_counts_as_staged():
     )
     assert result.status == "registered"
     assert page.clicks == [ADD, SAVE]
+
+
+def test_select_term_flow_reaches_crn_input():
+    page = FakePage(
+        {"#s2id_txt_term", "li.select2-results__option:has-text('Spring 2027')", "#term-go", "#txt_crn"},
+        body="Select a Term",
+    )
+    result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
+    assert result is None
+    assert page.urls[0].endswith("/term/termSelection?mode=registration")
+    assert "#s2id_txt_term" in page.clicks
+    assert "li.select2-results__option:has-text('Spring 2027')" in page.clicks
+    assert "#term-go" in page.clicks
+
+
+def test_select_term_stops_on_alternate_pin():
+    page = FakePage({"#input_alt_pin"}, body="Alternate PIN")
+    result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
+    assert result is not None
+    assert result.status == "alternate_pin_required"
+    assert page.clicks == []
+
+
+def test_select_term_reports_missing_continue_control():
+    page = FakePage(
+        {"#s2id_txt_term", "li.select2-results__option:has-text('Spring 2027')"},
+        body="Select a Term",
+    )
+    result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
+    assert result is not None
+    assert result.status == "term_selection_failed"
+    assert page.clicks == ["#s2id_txt_term", "li.select2-results__option:has-text('Spring 2027')"]
+
+
+def test_select_term_reports_not_eligible_before_window():
+    page = FakePage(
+        {"#s2id_txt_term"},
+        body="Term not eligible for registration",
+    )
+    result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
+    assert result is not None
+    assert result.status == "not_eligible"
+    assert "not eligible" in result.reason.lower()

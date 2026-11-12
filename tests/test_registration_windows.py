@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from eagle_flightplan.registration import (
     TIMEZONE,
     countdown,
     next_window,
     parse_failures,
+    parse_prepare_html,
     window,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 REAL_202610 = [
     "You have no Registration Time Ticket for the current time.",
@@ -113,3 +117,101 @@ def test_countdown_formatting():
     assert countdown(90) == "1m 30s"
     assert countdown(3 * 86400 + 4 * 3600 + 5 * 60) == "3d 4h 5m"
     assert countdown(0.5) == "now"
+
+
+def test_prepare_page_parses_future_ticket_and_standing():
+    html = (FIXTURES / "prepare_202620.html").read_text()
+    result = parse_prepare_html(html, "202620")
+    assert result.source == "banner_prepare"
+    assert result.eligible is False
+    assert result.parse_status == "parsed"
+    assert result.start.isoformat() == "2026-11-16T08:30:00-06:00"
+    assert result.end.isoformat() == "2027-03-22T23:59:00-05:00"
+    assert result.standing == "Senior"
+    assert result.institution_hours == 70
+    assert result.transfer_hours == 16
+    assert "do not allow registration" in result.time_ticket_text
+    assert "11/16/2026 08:30 AM" in result.raw_text
+
+
+def test_prepare_page_parses_expired_ticket():
+    html = (FIXTURES / "prepare_202610.html").read_text()
+    result = parse_prepare_html(html, "202610")
+    assert result.parse_status == "parsed"
+    assert result.start.isoformat() == "2026-04-20T08:30:00-05:00"
+    assert result.end.isoformat() == "2026-10-28T23:59:00-05:00"
+    assert result.standing == "Junior"
+
+
+def test_prepare_page_without_window_does_not_raise():
+    result = parse_prepare_html("<html><body>No ticket here</body></html>", "202630")
+    assert result.start is None and result.end is None
+    assert result.parse_status == "unknown"
+    assert result.standing is None
+
+
+def test_prepare_page_with_ticket_text_but_no_window():
+    result = parse_prepare_html(
+        "<html><body><p>Time tickets do not allow registration at this time.</p></body></html>",
+        "202630",
+    )
+    assert result.start is None
+    assert result.parse_status == "no_ticket"
+    assert result.time_ticket_text.startswith("Time tickets")
+
+
+def test_window_uses_prepare_page_when_term_search_has_no_start():
+    class FakeSSB:
+        def __init__(self):
+            self.calls = []
+
+        def set_term(self, term, mode):
+            self.calls.append((term, mode))
+            return {"studentEligValid": False, "studentEligFailures": REAL_202620}
+
+        def prepare_registration(self, term):
+            self.calls.append(("prepare", term))
+            return (FIXTURES / "prepare_202620.html").read_text()
+
+    ssb = FakeSSB()
+    result = window("202620", ssb=ssb)
+    assert ssb.calls == [("202620", "registration"), ("prepare", "202620")]
+    assert result.eligible is False
+    assert result.parse_status == "parsed"
+    assert result.source == "banner_prepare"
+    assert result.start.isoformat() == "2026-11-16T08:30:00-06:00"
+    assert result.standing == "Senior"
+
+
+def test_window_does_not_fetch_prepare_when_term_search_has_a_window():
+    class FakeSSB:
+        def __init__(self):
+            self.prepare_calls = 0
+
+        def set_term(self, term, mode):
+            return {"studentEligValid": False, "studentEligFailures": REAL_202610}
+
+        def prepare_registration(self, term):
+            self.prepare_calls += 1
+            raise AssertionError("prepare page must not be fetched")
+
+    ssb = FakeSSB()
+    result = window("202610", ssb=ssb)
+    assert ssb.prepare_calls == 0
+    assert result.source == "banner_term"
+    assert result.start.isoformat() == "2026-04-20T08:30:00-05:00"
+
+
+def test_window_prepare_failure_keeps_banner_text():
+    class FakeSSB:
+        def set_term(self, term, mode):
+            return {"studentEligValid": False, "studentEligFailures": REAL_202620}
+
+        def prepare_registration(self, term):
+            raise RuntimeError("prepare page unavailable")
+
+    result = window("202620", ssb=FakeSSB())
+    assert result.start is None
+    assert result.parse_status == "not_eligible"
+    assert result.reason.startswith("Term not eligible for registration")
+    assert "prepare page unavailable" in result.reason

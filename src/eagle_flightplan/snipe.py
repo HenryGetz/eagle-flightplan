@@ -62,6 +62,23 @@ AUTHORIZATION_SELECTORS = (
     ".olrPopup",
 )
 
+#: Term selection is a select2 combobox; ``#txt_term`` is the hidden input.
+TERM_COMBO_SELECTORS = (
+    "#s2id_txt_term",
+    "#term-select .select2-container",
+    "span.select2-selection",
+)
+CONTINUE_SELECTORS = (
+    "#term-go",
+    "button:has-text('Continue')",
+    "input[value*='Continue' i]",
+)
+ALTERNATE_PIN_SELECTORS = (
+    "#input_alt_pin",
+    "input[name='altPin']",
+    "#div_alt_pin",
+)
+
 #: A stage response is not a registration. These phrases mean the CRN was added
 #: to the pending schedule and the single Save click is still required.
 STAGING_SUCCESS_PATTERNS = (
@@ -125,6 +142,8 @@ class SnipeOptions(BaseModel):
     probe: bool = False
     max_attempts: int = 5
     timeout_seconds: int = 3600
+    prewarm_seconds: int = 30
+    poll_seconds: int = 5
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -276,6 +295,112 @@ def probe_page(page, ssb_base: str) -> dict:
         "add_selector": add_selector,
         "available": bool(crn_selector and add_selector),
     }
+
+
+def _term_option_selectors(text: str) -> tuple[str, ...]:
+    safe = text.replace("'", "\\'")
+    return (
+        f"li.select2-results__option:has-text('{safe}')",
+        f"li:has-text('{safe}')",
+        f"[role='option']:has-text('{safe}')",
+        f"text={safe}",
+    )
+
+
+def select_term(
+    page,
+    ssb_base: str,
+    term: str,
+    label: str = "",
+    *,
+    timeout_seconds: float = 20.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> SnipeResult | None:
+    """Select ``term`` in Banner's registration-mode term picker.
+
+    Returns ``None`` once the class-registration CRN input is visible. A returned
+    ``SnipeResult`` is a hard stop: ``alternate_pin_required``,
+    ``term_option_not_found``, ``term_selection_failed``, ``not_eligible`` or
+    ``registration_ui_unavailable``. This never clicks Add/Save and never guesses
+    an alternate PIN.
+    """
+    page.goto(f"{ssb_base}/term/termSelection?mode=registration", wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
+
+    pin = _first_visible_selector(page, ALTERNATE_PIN_SELECTORS)
+    if pin:
+        return SnipeResult(
+            status="alternate_pin_required",
+            reason=f"Banner asks for an alternate PIN ({pin}); no PIN was guessed.",
+        )
+
+    combo = _first_visible_selector(page, TERM_COMBO_SELECTORS)
+    if combo:
+        page.click(combo)
+        page.wait_for_timeout(500)
+
+    option: str | None = None
+    for text in [value for value in (label, term) if value]:
+        for selector in _term_option_selectors(text):
+            try:
+                if page.locator(selector).count():
+                    page.click(selector)
+                    option = selector
+                    break
+            except Exception:  # noqa: BLE001 - selector probing must never crash
+                continue
+        if option:
+            break
+
+    if option is None:
+        body = " ".join((page.inner_text("body") or "").split())
+        if "not eligible" in body.lower():
+            return SnipeResult(
+                status="not_eligible",
+                reason=body[:300] or "Term not eligible for registration",
+            )
+        return SnipeResult(
+            status="term_option_not_found",
+            reason=(
+                f"Could not find an option for {label or term!r} in the registration "
+                "term picker. The term is not open yet; retry at the window start."
+            ),
+        )
+
+    continue_selector = _first_visible_selector(page, CONTINUE_SELECTORS)
+    if continue_selector is None:
+        return SnipeResult(
+            status="term_selection_failed",
+            reason="Term Continue control did not resolve; the term was not selected.",
+        )
+    page.click(continue_selector)
+
+    deadline = clock() + timeout_seconds
+    while True:
+        page.wait_for_timeout(1000)
+        if _first_visible_selector(page, ALTERNATE_PIN_SELECTORS):
+            return SnipeResult(
+                status="alternate_pin_required",
+                reason="Banner asks for an alternate PIN after Continue; no PIN was guessed.",
+            )
+        if _first_visible_selector(page, CRN_INPUT_SELECTORS):
+            return None
+        body = " ".join((page.inner_text("body") or "").split()).lower()
+        if "not eligible" in body:
+            return SnipeResult(
+                status="not_eligible",
+                reason="Banner still reports the term as not eligible after selecting it.",
+            )
+        if clock() >= deadline:
+            return SnipeResult(
+                status="registration_ui_unavailable",
+                reason=(
+                    "Term was selected but the class-registration CRN input never "
+                    "appeared; the term is probably not eligible yet."
+                ),
+            )
+        sleep(1.0)
 
 
 def execute_targets(
@@ -492,23 +617,26 @@ def capture_traffic(page, path: Path) -> Path:
 
 
 def wait_for_window(term: str, *, offset_seconds: int, interval_seconds: int, timeout_seconds: int,
+                    prewarm_seconds: int = 0, poll_seconds: int | None = None,
                     sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                     window_fn: Callable[[str], RegistrationWindow] = window) -> RegistrationWindow:
     """Sleep until the window start (plus offset), then poll until eligible."""
-    started = clock()
     current = window_fn(term)
     if current.start is not None and not current.eligible:
         target = current.start + timedelta(seconds=offset_seconds)
-        wait = (target - datetime.now(current.start.tzinfo)).total_seconds()
+        launch_at = target - timedelta(seconds=max(0, prewarm_seconds))
+        wait = (launch_at - datetime.now(target.tzinfo)).total_seconds()
         if wait > 0:
             print(f"Waiting {countdown(wait)} for {term} to open at {target.isoformat()} …", flush=True)
             sleep(wait)
-    while clock() - started < timeout_seconds:
+    interval = poll_seconds if poll_seconds is not None else interval_seconds
+    deadline = clock() + timeout_seconds
+    while clock() < deadline:
         current = window_fn(term)
         if current.eligible:
             return current
-        print(f"Not eligible yet ({current.reason[:120]}); retrying in {interval_seconds}s", flush=True)
-        sleep(interval_seconds)
+        print(f"Not eligible yet ({current.reason[:120]}); retrying in {interval}s", flush=True)
+        sleep(interval)
     return window_fn(term)
 
 
@@ -545,14 +673,52 @@ def check_registration_eligible(term: str, *, ssb: object | None = None) -> Snip
     return None
 
 
+def _term_label(ssb: object, term: str) -> str:
+    try:
+        for item in ssb.get_terms():
+            if item.code == term:
+                return item.description
+    except Exception:  # noqa: BLE001 - the code is a valid fallback
+        pass
+    return ""
+
+
+def _window_summary(current: RegistrationWindow) -> str:
+    if current.start is None:
+        return "no time-ticket window assigned yet"
+    end = f" .. {current.end.isoformat()}" if current.end else ""
+    return f"window {current.start.isoformat()}{end}"
+
+
+def _poll_until_eligible(
+    term: str,
+    *,
+    ssb: object,
+    deadline: float,
+    poll_seconds: int,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> RegistrationWindow:
+    current = window(term, ssb=ssb)
+    while not current.eligible and clock() < deadline:
+        print(
+            f"Not eligible yet ({current.reason[:120]}); retrying in {poll_seconds}s",
+            flush=True,
+        )
+        sleep(poll_seconds)
+        current = window(term, ssb=ssb)
+    return current
+
+
 def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str | None = None) -> SnipeResult:
     """Execute a probe/dry-run/live run in one browser context.
 
-    For every non-probe run the term is bound in registration mode **before** the
-    registration UI is opened; an ineligible term returns ``not_eligible`` with
-    Banner's failure text. In ``seats`` mode the seat wait runs first, then the
-    registration binding happens immediately before execution. ``--probe`` is
-    unchanged and intentionally skips the eligibility gate.
+    Live ``window`` runs resolve the personal ticket first (``term/search`` plus
+    the Prepare for Registration page), pre-warm the browser at
+    ``start - prewarm_seconds``, poll eligibility near T0, select the term, then
+    run the existing two-phase Add/Save loop. A future ticket does not make the
+    term eligible; only Banner's ``studentEligValid`` does. Dry runs never wait
+    for hours and never click Add/Save.
     """
     from playwright.sync_api import sync_playwright
 
@@ -567,39 +733,62 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
     state_path = STATE_PATH
     capture = _capture_path(options.term, "probe" if options.probe else ("live" if options.live else "dry"))
 
-    if not options.probe:
-        ssb = _SSBClient(ensure(settings))
-        if options.mode == "window" and not options.dry_run:
-            wait_for_window(
-                options.term,
-                offset_seconds=options.offset_seconds,
-                interval_seconds=options.interval_seconds,
-                timeout_seconds=options.timeout_seconds,
-            )
-        if options.mode == "seats":
-            ssb.set_term(options.term, mode="search")
-            if options.dry_run:
+    ssb = _SSBClient(ensure(settings))
+    current = window(options.term, ssb=ssb) if not options.probe else None
+
+    if options.mode == "seats" and not options.probe:
+        ssb.set_term(options.term, mode="search")
+        if options.dry_run:
+            ready = _seats_ready(options.term, targets, ssb)
+            print(f"Seat check: {len(ready)}/{len(targets)} target(s) currently open.", flush=True)
+        else:
+            deadline = time.monotonic() + options.timeout_seconds
+            ready = []
+            while time.monotonic() < deadline:
                 ready = _seats_ready(options.term, targets, ssb)
-                print(f"Seat check: {len(ready)}/{len(targets)} target(s) currently open.", flush=True)
-            else:
-                deadline = time.monotonic() + options.timeout_seconds
-                ready = []
-                while time.monotonic() < deadline:
-                    ready = _seats_ready(options.term, targets, ssb)
-                    if ready:
-                        break
-                    print(f"No seats yet for {', '.join(t.crn for t in targets)}; waiting {options.interval_seconds}s", flush=True)
-                    time.sleep(options.interval_seconds)
-            targets = ready or []
-            if not targets:
+                if ready:
+                    break
+                print(f"No seats yet for {', '.join(t.crn for t in targets)}; waiting {options.interval_seconds}s", flush=True)
+                time.sleep(options.interval_seconds)
+        targets = ready or []
+        if not targets and not options.dry_run:
+            return SnipeResult(
+                status="no_seats",
+                reason="no target section has an open seat yet",
+                capture_path=str(capture),
+            )
+        current = window(options.term, ssb=ssb)
+
+    if current is not None:
+        if options.dry_run:
+            if not current.eligible:
                 return SnipeResult(
-                    status="no_seats",
-                    reason="no target section has an open seat yet",
+                    status="dry_run",
+                    reason=(
+                        f"{_window_summary(current)}; not eligible yet "
+                        f"({current.reason[:160]}). Would stage {len(targets)} CRN(s) "
+                        "and click Save once when Banner becomes eligible."
+                    ),
+                    attempted=[target.crn for target in targets],
                     capture_path=str(capture),
                 )
-        blocked = check_registration_eligible(options.term, ssb=ssb)
-        if blocked is not None:
-            return blocked
+        elif not current.eligible:
+            if current.start is None:
+                return SnipeResult(
+                    status="not_eligible",
+                    reason=current.reason or "Term not eligible for registration",
+                    capture_path=str(capture),
+                )
+            target = current.start + timedelta(seconds=options.offset_seconds)
+            launch_at = target - timedelta(seconds=max(0, options.prewarm_seconds))
+            wait = (launch_at - datetime.now(target.tzinfo)).total_seconds()
+            if wait > 0:
+                print(
+                    f"Waiting {countdown(wait)} to pre-warm at {launch_at.isoformat()} "
+                    f"for the {target.isoformat()} window …",
+                    flush=True,
+                )
+                time.sleep(wait)
 
     result: SnipeResult
     with sync_playwright() as pw:
@@ -622,6 +811,47 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
                     capture_path=str(capture),
                 )
             else:
+                if not current.eligible:
+                    # Pre-warm the term picker while Banner catches up to T0.
+                    page.goto(f"{base}/term/termSelection?mode=registration", wait_until="domcontentloaded")
+                    page.wait_for_timeout(1500)
+                    deadline = time.monotonic() + options.timeout_seconds
+                    current = _poll_until_eligible(
+                        options.term,
+                        ssb=ssb,
+                        deadline=deadline,
+                        poll_seconds=max(1, options.poll_seconds),
+                    )
+                    if not current.eligible:
+                        result = SnipeResult(
+                            status="not_eligible",
+                            reason=current.reason or "Term not eligible for registration",
+                            capture_path=str(capture),
+                        )
+                        return result
+
+                label = _term_label(ssb, options.term)
+                deadline = time.monotonic() + options.timeout_seconds
+                while True:
+                    selected = select_term(page, base, options.term, label)
+                    if selected is None:
+                        break
+                    retryable = selected.status in {
+                        "not_eligible",
+                        "term_option_not_found",
+                        "registration_ui_unavailable",
+                    }
+                    if not retryable or time.monotonic() >= deadline:
+                        result = selected
+                        result.capture_path = str(capture)
+                        return result
+                    print(
+                        f"Term not selectable yet ({selected.status}); retrying in "
+                        f"{max(1, options.poll_seconds)}s",
+                        flush=True,
+                    )
+                    time.sleep(max(1, options.poll_seconds))
+
                 result = execute_targets(
                     page,
                     targets,

@@ -113,3 +113,29 @@ def test_html_where_json_expected_is_session_expiry(client):
     ssb.set_term("202620")
     with pytest.raises(SessionExpiredError):
         ssb._get_json("/plan/selectPlan")
+
+
+def test_prepare_registration_binds_term_and_returns_html():
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path.replace("/StudentRegistrationSsb/ssb", "")
+        calls.append((request.method, path))
+        if path == "/term/search":
+            return httpx.Response(200, json={"studentEligValid": False})
+        if path == "/prepareRegistration/prepareRegistration":
+            return httpx.Response(
+                200,
+                text="<html><body>Please register within these times:</body></html>",
+                headers={"content-type": "text/html;charset=UTF-8"},
+            )
+        return httpx.Response(404)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE)
+    ssb = SSBClient(http, min_interval=0)
+    html = ssb.prepare_registration("202620")
+    assert "Please register within these times" in html
+    assert calls == [
+        ("POST", "/term/search"),
+        ("GET", "/prepareRegistration/prepareRegistration"),
+    ]
