@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rich.console import Console
 
+from unw_planner.audit import AuditClient
 from unw_planner.banner.plan import PlanClient
+from unw_planner.catalog import applied_codes
 from unw_planner.banner.search import load_snapshot
 from unw_planner.planner import RatingProvider
 from unw_planner.schedule import render_grid_checked
@@ -40,7 +42,16 @@ def sections_for(plan, snapshot):
     return sections
 
 
-def plan_markdown(plan, sections, ratings, checked: bool = True) -> str:
+def _validation_lines(client: PlanClient, plan, passed: set[str] | None) -> list[str]:
+    issues = client.validate(plan.id, plan.term, passed_codes=passed)
+    if not issues:
+        return ["", "Validation: no blockers or warnings."]
+    return ["", "Validation warnings:"] + [
+        f"* {'HARD' if issue.hard else 'soft'}: {issue.message}" for issue in issues
+    ]
+
+
+def plan_markdown(plan, sections, ratings, checked: bool = True, validation: list[str] | None = None) -> str:
     crns = [section.crn for section in sections]
     grid = render_grid_checked(
         [section.to_schedule_section() for section in sections],
@@ -64,6 +75,8 @@ def plan_markdown(plan, sections, ratings, checked: bool = True) -> str:
             f"{section.day_label} | {section.time_label} | {section.credits:g} |"
         )
     lines += ["", "```", grid, "```"]
+    if validation:
+        lines += validation
     return "\n".join(lines) + "\n"
 
 
@@ -72,7 +85,12 @@ def reemit_plan_artifacts() -> list[str]:
     if snapshot is None:
         raise SystemExit("202620 snapshot missing")
     ratings = RatingProvider()
-    plans = PlanClient().list_plans(TERM)
+    client = PlanClient()
+    plans = client.list_plans(TERM)
+    try:
+        passed = applied_codes(AuditClient().audit())
+    except Exception:  # noqa: BLE001 - validation without prereqs is still useful
+        passed = None
     written = []
     keymap = {"Plan A": "A", "Plan B": "B", "Plan C": "C"}
     for plan in plans:
@@ -80,7 +98,9 @@ def reemit_plan_artifacts() -> list[str]:
         if key is None:
             continue
         sections = sections_for(plan, snapshot)
-        markdown = plan_markdown(plan, sections, ratings)
+        markdown = plan_markdown(
+            plan, sections, ratings, validation=_validation_lines(client, plan, passed)
+        )
         (CAPTURES / "plans" / f"{key}_202620.md").write_text(markdown, encoding="utf-8")
         existing = CAPTURES / "plans" / f"{key}_202620.json"
         payload = json.loads(existing.read_text()) if existing.exists() else {}
@@ -105,12 +125,19 @@ def reemit_plan_artifacts() -> list[str]:
 def reemit_advisor_plan() -> list[str]:
     snapshot = load_snapshot(TERM)
     ratings = RatingProvider()
-    plan = next(p for p in PlanClient().list_plans(TERM) if p.name == "Advisor Plan - Spring 2027")
+    client = PlanClient()
+    plan = next(p for p in client.list_plans(TERM) if p.name == "Advisor Plan - Spring 2027")
     sections = sorted(sections_for(plan, snapshot), key=lambda s: s.crn)
+    try:
+        passed = applied_codes(AuditClient().audit())
+    except Exception:  # noqa: BLE001
+        passed = None
     path = CAPTURES / "advisor_plan_202620.md"
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     tail = old[old.index("## Rationale"):] if "## Rationale" in old else ""
-    markdown = plan_markdown(plan, sections, ratings)
+    markdown = plan_markdown(
+        plan, sections, ratings, validation=_validation_lines(client, plan, passed)
+    )
     markdown = markdown.replace(
         f"Banner total {plan.total_planned_credit_hours:g} credits · fixed credits "
         f"{sum((s.credits or 0) for s in sections):g}",

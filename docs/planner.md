@@ -61,10 +61,23 @@ Hard constraints
 1. Must-take major courses that are offered are placed (ordering + priority).
 2. No time overlap: `schedule.find_conflicts` (half-open intervals, linked/lab
    exemptions, TBA never clashes).
-3. `max_credits` (default **16**), `avoid_days`, `earliest`/`latest` window.
+3. `max_credits` (default **16**), `avoid_days`, `earliest`/`latest` window, and
+   `avoid_instructors` (a section taught only by avoided instructors is rejected).
 4. Prerequisites: Banner's "Course or Test: …" text parsed into an `and`/`or`
    tree; `and` binds tighter. A course needs the prereq already completed or in
-   progress in an *earlier* term.
+   progress in an *earlier* term. The check is tri-state: unparsable text or a
+   fetch failure is `unknown`, which places the section with
+   `prereq_unverified` and a warning rather than silently allowing it.
+5. `required_crns`/`required_courses` (draft only) are placed before requirement
+   buckets. An unavailable, excluded, conflicting, prerequisite-blocked or
+   over-budget pin is reported in `pinned` and `errors`, and the draft response
+   is `ok: false`; it is never dropped silently.
+6. `min_credits` tops up from remaining elective/optional candidates after the
+   normal pass. If it still cannot be met, `min_credits_met` is false and a
+   warning names the shortfall; no course is invented.
+7. `excluded_crns`/`excluded_courses` remove candidates; `credit_overrides`
+   (CRN → hours) sets the credits reserved for a variable-credit section.
+   Variable-credit sections otherwise reserve the low end of their range.
 
 Ranking (deterministic total order)
 

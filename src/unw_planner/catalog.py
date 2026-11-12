@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 from pydantic import BaseModel, Field
 
 from .audit.models import Audit, CourseRef, GroupKind, RequirementGroup, RequirementStatus
-from .banner.search import TermSnapshot
+
+if TYPE_CHECKING:  # avoids catalog -> banner.search -> banner.plan -> catalog
+    from .banner.search import TermSnapshot
 from .models import Section
 
 SEASON = {"10": "Fall", "20": "Spring", "30": "Summer", "40": "Winter"}
@@ -55,6 +57,12 @@ class Availability(str, Enum):
     OPEN = "open"
     NOT_YET_OPEN = "not_yet_open"
     CLOSED = "closed"
+
+
+#: Course-status values that earn credit toward requirements and prerequisites.
+#: ``failed``/``withdrawn``/``incomplete``/``audit`` are deliberately excluded so
+#: an attempt can be retaken and cannot silently satisfy a requirement.
+CREDIT_STATUSES = frozenset({"completed", "in_progress"})
 
 
 ARRANGEMENT_NUMBERS = {"4841", "4855", "4995"}
@@ -136,20 +144,16 @@ class Requirement(BaseModel):
 
 
 def _is_optional(group_title: str, label: str, kind: GroupKind, min_credits: float | None) -> bool:
-    lowered = f"{group_title} {label}".lower()
+    """True only for genuine elective/extra-credit pools.
+
+    A block that names concrete courses or states a minimum (``pick one of`` or
+    ``choose 4 credits``) is a requirement, even when its group title happens to
+    contain a word like "leadership" or "scientific".
+    """
     if kind is GroupKind.ELECTIVE:
         return True
+    lowered = f"{group_title} {label}".lower()
     return "additional credits" in lowered or "elective" in lowered
-
-
-def _parse_attribute_codes(ref: CourseRef) -> list[str]:
-    codes: list[str] = []
-    for match in ATTRIBUTE_IN_NOTES.finditer(ref.satisfies_notes):
-        for code in match.group(1).split(","):
-            code = code.strip().upper()
-            if code and code not in {"AND", "OR"}:
-                codes.append(code)
-    return codes
 
 
 def _priority(
@@ -160,14 +164,24 @@ def _priority(
     targets: list[CourseKey],
     attributes: list[str],
 ) -> Priority:
-    if kind is GroupKind.MAJOR:
-        return Priority.MAJOR_POOL if _is_optional(group_title, label, kind, min_credits) else Priority.MAJOR_REQUIRED
-    lowered = f"{group_title} {label}".lower()
-    if any(word in lowered for word in ("leadership", "cultural", "global engagement", "scientific", "natural science")):
+    optional = _is_optional(group_title, label, kind, min_credits)
+    if kind in (GroupKind.MAJOR, GroupKind.MINOR):
+        return Priority.MAJOR_POOL if optional else Priority.MAJOR_REQUIRED
+    if optional:
         return Priority.GEN_ED_FILL
-    if attributes and not targets:
-        return Priority.GEN_ED_FILL
+    # Everything else is a named general-education/degree requirement. No
+    # keyword on the group title is allowed to demote it to filler.
     return Priority.GEN_ED_REQUIRED
+
+
+def _parse_attribute_codes(ref: CourseRef) -> list[str]:
+    codes: list[str] = []
+    for match in ATTRIBUTE_IN_NOTES.finditer(ref.satisfies_notes):
+        for code in match.group(1).split(","):
+            code = code.strip().upper()
+            if code and code not in {"AND", "OR"}:
+                codes.append(code)
+    return codes
 
 
 def _needs_arrangement(label: str, targets: list[CourseKey]) -> bool:
@@ -197,7 +211,7 @@ def requirements_from_audit(audit: Audit) -> list[Requirement]:
                 attributes.extend(_parse_attribute_codes(option))
                 if option.subject and not option.number:
                     wildcards.append(option.subject.upper())
-            applied = [option for option in options if option.status in {"completed", "in_progress"}]
+            applied = [option for option in options if option.status in CREDIT_STATUSES]
             applied_credits = sum(option.credits or 0 for option in applied)
             credit_match = CREDITS_IN_NOTES.search(block.notes or "")
             min_credits = None
@@ -257,7 +271,7 @@ def applied_codes(audit: Audit) -> set[str]:
     for group in audit.walk():
         for block in group.blocks:
             for option in block.options:
-                if option.status in {"completed", "in_progress"} and option.code:
+                if option.status in CREDIT_STATUSES and option.code:
                     codes.add(option.code.upper().replace("  ", " "))
     return codes
 

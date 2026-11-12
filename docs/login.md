@@ -120,4 +120,29 @@ Exceptions: `AuthError`, `MFARequiredError` (MFA page reached but no code box â€
 carries the selector/URL that failed), `SessionExpiredError` (no state file or
 the server answered with a login page).
 
-CLI: `python scripts/login.py --force [--headed]`.
+CLI: `<venv python> -m unw_planner.cli login --force`.
+
+## Automatic re-authentication (self-healing)
+
+Every Banner/audit request that goes through the typed clients is wrapped by
+`auth.request_with_refresh()`. When a response is the logged-out shell (empty
+`fullName` meta, 401/419, or a redirect to Entra), it:
+
+1. takes a process-wide login lock,
+2. re-checks `session_valid()` (a second thread that already healed wins),
+3. runs `login(force=True)` **once**, refreshes the client cookies and retries the
+   request **once**.
+
+A repeated failure raises `SessionExpiredError` with the manual command
+(the packaged `unwplanner login --force` command); it never loops. Non-idempotent plan writes
+are never replayed, even after a successful re-login.
+
+Controls: `UNW_AUTO_LOGIN=0` disables healing (`unwplanner advise --no-auto-login`
+also sets it), and a login failure surfaces the original error plus the manual
+command. Concurrent tool calls cannot start two browsers because the re-login
+holds a lock and re-checks validity inside it.
+
+Measured cost (headless Chromium, cold state, 2026-11-11): **~20.5 s** for a full
+password + TOTP + KMSI(NO) login, including the audit-host SSO check. Warm
+re-login with a still-valid Entra cookie is typically faster (no credential
+prompts).

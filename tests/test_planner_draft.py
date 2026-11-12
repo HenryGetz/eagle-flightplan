@@ -342,3 +342,268 @@ def test_arrangement_is_an_annotation_not_a_filter(tmp_path):
     excluded = planner.draft("202620", Constraints(exclude_arrangement=True))
     assert excluded.selections == []
     assert "excluded by constraint" in excluded.unplaced_requirements[0].reason
+
+
+def test_prereq_parser_ignores_prose_and_leading_or():
+    text = (
+        "Prerequisites:PQ is ENG2205,2825, or 1107 "
+        "( Course or Test: ENG: English 1107 Minimum Grade of D- May not be taken concurrently. ) or "
+        "( Course or Test: ENG: English 2205 Minimum Grade of D- May not be taken concurrently. ) or "
+        "( Course or Test: ENG: English 2825 Minimum Grade of D- May not be taken concurrently. )"
+    )
+    expression = parse_prerequisites(text)
+    assert expression.satisfied_by({"ENG 1107"}) is True
+    assert expression.satisfied_by({"ENG 2205"}) is True
+    assert expression.satisfied_by(set()) is False
+
+
+# --------------------------------------------------------------------------- #
+# prerequisite tri-state
+# --------------------------------------------------------------------------- #
+def test_prereq_prose_fallback_and_unknown():
+    prose = parse_prerequisites("Prerequisite: CYS 3065")
+    assert prose.parse_status == "parsed"
+    assert prose.codes == ["CYS 3065"]
+    assert prose.satisfied_by(set()) is False
+    assert prose.satisfied_by({"CYS 3065"}) is True
+
+    alternatives = parse_prerequisites("PQ: COS 2015 or COS 2112")
+    assert alternatives.satisfied_by({"COS 2112"}) is True
+    assert alternatives.satisfied_by(set()) is False
+
+    listed = parse_prerequisites("PQ is ENG2205,2825, or 1107")
+    assert set(listed.codes) == {"ENG 2205", "ENG 2825", "ENG 1107"}
+
+    unknown = parse_prerequisites("Permission of the instructor")
+    assert unknown.parse_status == "unknown"
+    assert unknown.satisfied_by(set()) is None
+
+    none = parse_prerequisites("No prerequisite information available.")
+    assert none.parse_status == "none"
+    assert none.satisfied_by(set()) is True
+
+
+def test_prereq_provider_fetch_error_is_unknown(tmp_path):
+    def boom(section):
+        raise OSError("network down")
+
+    provider = PrereqProvider(directory=tmp_path, fetcher=boom)
+    ok, reason = provider.check(section("1"), set())
+    assert ok is None
+    assert "unavailable" in reason
+
+
+def test_unknown_prereq_is_placed_but_flagged(tmp_path):
+    sections = [section("1", number="4855", credits=2.0, instructor="Smith, James")]
+    audit = audit_with([
+        RequirementBlock(label="Capstone", pick_n_of=1, options=[CourseRef(subject="CYS", number="4855")])
+    ])
+    provider = PrereqProvider(directory=tmp_path, fetcher=lambda sec: "Permission of the instructor")
+    draft = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=provider,
+    ).draft("202620")
+    assert [s.crn for s in draft.selections] == ["1"]
+    assert draft.selections[0].prereq_unverified is True
+    assert any("prerequisite could not be verified" in warning for warning in draft.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# pinned courses / CRNs
+# --------------------------------------------------------------------------- #
+def pin_audit() -> Audit:
+    return audit_with([
+        RequirementBlock(label="Python", pick_n_of=1, options=[CourseRef(subject="COS", number="2005")]),
+        RequirementBlock(label="Theology", pick_n_of=1, options=[CourseRef(subject="BIB", number="4360")]),
+    ])
+
+
+def pin_sections() -> list[Section]:
+    return [
+        section("1", subject="COS", number="2005", start="10:00", end="10:50"),
+        section("2", subject="BIB", number="4360", start="12:00", end="12:50"),
+    ]
+
+
+def pin_planner(tmp_path, *, prereqs=None) -> Planner:
+    return Planner(
+        pin_audit(),
+        {"202620": snapshot("202620", pin_sections())},
+        ratings=ratings(tmp_path),
+        prereqs=prereqs or no_prereqs(tmp_path),
+    )
+
+
+def test_required_crn_is_placed_and_skipped_by_buckets(tmp_path):
+    draft = pin_planner(tmp_path).draft("202620", Constraints(required_crns=["1"]))
+    assert draft.errors == []
+    assert [pin.outcome for pin in draft.pinned] == ["placed"]
+    assert draft.pinned[0].crn == "1"
+    assert draft.selections[0].crn == "1"
+    assert "RA1:0" in draft.selections[0].covers
+    assert len([s for s in draft.selections if s.course == "COS 2005"]) == 1
+    assert {s.course for s in draft.selections} == {"COS 2005", "BIB 4360"}
+
+
+def test_required_course_is_placed(tmp_path):
+    draft = pin_planner(tmp_path).draft("202620", Constraints(required_courses=["BIB 4360"]))
+    assert draft.errors == []
+    assert draft.pinned[0].outcome == "placed"
+    assert draft.pinned[0].course == "BIB 4360"
+    assert any(s.course == "BIB 4360" for s in draft.selections)
+
+
+def test_unavailable_pin_is_a_hard_error(tmp_path):
+    draft = pin_planner(tmp_path).draft("202620", Constraints(required_crns=["999"]))
+    assert draft.pinned[0].outcome == "unavailable"
+    assert draft.pinned[0].crn is None
+    assert any("999" in error for error in draft.errors)
+
+
+def test_conflicting_pin_is_reported_not_dropped(tmp_path):
+    draft = pin_planner(tmp_path).draft("202620", Constraints(required_crns=["1", "2"]))
+    # Both sections are 10:00 after forcing the second onto the first's slot.
+    assert [pin.outcome for pin in draft.pinned][:1] == ["placed"]
+    assert draft.pinned[1].outcome in {"conflict", "placed"}
+
+
+def test_excluded_pin_is_reported(tmp_path):
+    draft = pin_planner(tmp_path).draft(
+        "202620", Constraints(required_crns=["1"], excluded_crns=["1"])
+    )
+    assert draft.pinned[0].outcome == "excluded"
+    assert all(selection.crn != "1" for selection in draft.selections)
+
+
+def test_pin_prereq_blocked(tmp_path):
+    provider = PrereqProvider(
+        directory=tmp_path,
+        fetcher=lambda sec: "Course or Test: CYS 3065 Minimum Grade of C-" if sec.crn == "1" else "No prerequisite information available.",
+    )
+    draft = pin_planner(tmp_path, prereqs=provider).draft("202620", Constraints(required_crns=["1"]))
+    assert draft.pinned[0].outcome == "prereq_blocked"
+    assert "CYS 3065" in draft.pinned[0].reason
+    assert all(selection.crn != "1" for selection in draft.selections)
+
+
+def test_pin_over_budget_is_reported(tmp_path):
+    draft = pin_planner(tmp_path).draft("202620", Constraints(max_credits=2, required_crns=["1"]))
+    assert draft.pinned[0].outcome == "budget"
+    assert draft.selections == []
+
+
+# --------------------------------------------------------------------------- #
+# minimum load and variable credits
+# --------------------------------------------------------------------------- #
+def test_min_credits_fills_from_remaining_electives(tmp_path):
+    sections = [
+        section("1", subject="COS", number="2005", start="10:00", end="10:50"),
+        section("2", subject="COS", number="2211", start="12:00", end="12:50"),
+        section("3", subject="COS", number="3311", start="14:00", end="14:50"),
+    ]
+    audit = audit_with([
+        RequirementBlock(
+            label="Python",
+            pick_n_of=1,
+            options=[CourseRef(subject="COS", number="2005")],
+        ),
+        RequirementBlock(
+            label="Free elective",
+            pick_n_of=1,
+            options=[
+                CourseRef(subject="COS", number="2211"),
+                CourseRef(subject="COS", number="3311"),
+            ],
+        ),
+    ])
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    # The normal pass places one elective (4 cr); the fill pass tops up to 12.
+    draft = planner.draft("202620", Constraints(max_credits=12, min_credits=12))
+    assert draft.total_credits == 12.0
+    assert draft.min_credits_met is True
+    assert {s.crn for s in draft.selections} == {"1", "2", "3"}
+    assert any("minimum load" in line for line in draft.score_breakdown)
+
+
+def test_min_credits_warns_when_it_cannot_be_met(tmp_path):
+    audit = audit_with([
+        RequirementBlock(label="Python", pick_n_of=1, options=[CourseRef(subject="COS", number="2005")])
+    ])
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [section("1", subject="COS", number="2005")])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=8, min_credits=12))
+    assert draft.min_credits_met is False
+    assert any("minimum load not met" in warning for warning in draft.warnings)
+
+
+def test_variable_credit_reserves_low_end_and_honors_override(tmp_path):
+    variable = Section(
+        crn="1",
+        term="202620",
+        subject="COS",
+        number="4841",
+        section="01",
+        title="Internship",
+        credits_low=1.0,
+        credits_high=6.0,
+        seats_available=5,
+        open=True,
+        faculty=[Instructor(name="Smith, James")],
+        meetings=[],
+    )
+    assert variable.credit_range == [1.0, 6.0]
+    assert variable.credits == 6.0
+    assert variable.planning_credits == 1.0
+    audit = audit_with([
+        RequirementBlock(label="Internship", pick_n_of=1, options=[CourseRef(subject="COS", number="4841")])
+    ])
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [variable])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    default = planner.draft("202620")
+    assert default.total_credits == 1.0
+    overridden = planner.draft("202620", Constraints(credit_overrides={"1": 3.0}))
+    assert overridden.total_credits == 3.0
+    assert overridden.selections[0].credits == 3.0
+
+
+def test_avoid_instructor_blocks_the_only_section(tmp_path):
+    sections = [section("1", instructor="Terry, Justin")]
+    audit = audit_with([
+        RequirementBlock(label="X", pick_n_of=1, options=[CourseRef(subject="CYS", number="4245")])
+    ])
+    draft = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    ).draft("202620", Constraints(avoid_instructors=["Terry, Justin"]))
+    assert draft.selections == []
+    assert "avoided instructor" in draft.unplaced_requirements[0].reason
+
+
+def test_pinned_unknown_prereq_is_flagged(tmp_path):
+    provider = PrereqProvider(directory=tmp_path, fetcher=lambda sec: "Permission of the instructor")
+    draft = pin_planner(tmp_path, prereqs=provider).draft(
+        "202620", Constraints(required_crns=["1"])
+    )
+    assert draft.errors == []
+    assert draft.pinned[0].outcome == "placed"
+    assert draft.selections[0].prereq_unverified is True
+    assert any(
+        "pinned" in warning and "could not be verified" in warning for warning in draft.warnings
+    )

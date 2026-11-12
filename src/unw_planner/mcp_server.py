@@ -22,8 +22,9 @@ import logging
 import os
 import re
 import threading
-from datetime import datetime, timezone
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -38,7 +39,14 @@ from .audit.models import (
     RequirementGroup,
     RequirementStatus,
 )
-from .banner.plan import Plan, PlanClient, PlanError, PlanNotFoundError
+from .banner.plan import (
+    DuplicateCourseError,
+    Plan,
+    PlanAheadUnavailable,
+    PlanClient,
+    PlanError,
+    PlanNotFoundError,
+)
 from .banner.search import (
     TermIndex,
     TermSnapshot,
@@ -61,7 +69,7 @@ from .catalog import (
     resolve,
     term_label,
 )
-from .config import REPO_ROOT, STATE_PATH, TERMS_DIR, get_settings
+from .config import REPO_ROOT, STATE_PATH, TERMS_DIR, get_settings, login_command
 from .models import Section
 from .planner import (
     Constraints,
@@ -77,6 +85,7 @@ from .schedule import (
     Weekday,
     conflict_summary,
     find_conflicts,
+    grid_legend,
     parse_banner_time,
     render_grid,
 )
@@ -89,15 +98,15 @@ SERVER_VERSION = "0.1.0"
 CURRENT_TERM = os.environ.get("UNW_CURRENT_TERM", "202610")
 
 #: Exact command that repairs an expired/stale session in a fresh process.
-FIX_COMMAND = (
-    f"cd {REPO_ROOT} && {REPO_ROOT}/.venv/bin/python scripts/login.py --force"
-)
-FIX_COMMAND_ALT = f"uv run --project {REPO_ROOT} unwplanner login --force"
+#: The packaged CLI works for editable and wheel installs alike.
+FIX_COMMAND = login_command()
+FIX_COMMAND_ALT = "unwplanner login --force"
 
 # Keep per-request HTTP chatter off the operator's console; tool payloads carry
 # everything the agent needs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = logging.getLogger("unw_planner.mcp_server")
 
 _DAY_ALIASES = {
     "m": "Mon",
@@ -136,6 +145,10 @@ _TERM_ELIGIBILITY: dict[str, dict[str, Any]] = {}
 _BANNER_LOCK = threading.RLock()
 _SEASON_LABEL = {"10": "Fall", "20": "Spring", "30": "Summer", "40": "Winter"}
 
+#: Hard cap on one search page. A whole-term dump (800+ sections, ~1.2 MB) is too
+#: large for a stdio MCP response, so callers paginate with limit/offset.
+SEARCH_LIMIT_CAP = 200
+
 
 # --------------------------------------------------------------------------- #
 # small helpers
@@ -159,7 +172,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _utc_iso(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
 
 
 def _age_human(seconds: float | None) -> str:
@@ -216,7 +229,7 @@ def _error(exc: Exception) -> dict[str, Any]:
 def _safe(fn: Callable[..., dict], /, *args: Any, **kwargs: Any) -> dict:
     try:
         return fn(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - the tool boundary must not crash
+    except Exception as exc:
         return _error(exc)
 
 
@@ -257,9 +270,19 @@ def section_payload(section: Section, *, current_term: str | None = CURRENT_TERM
         "credits": section.credits,
         "credits_low": section.credits_low,
         "credits_high": section.credits_high,
+        "planning_credits": section.planning_credits,
+        "credit_range": section.credit_range,
         "variable_credits": section.credits_high is not None
         and section.credits_low is not None
         and section.credits_high != section.credits_low,
+        "credits_semantics": (
+            "credits=display high end; planning_credits=reserved (low end unless "
+            "overridden); credit_range=raw range"
+        ),
+        "part_of_term_note": (
+            "Banner-native part-of-term code; '1' is full term, other codes are "
+            "session-specific; labels are not mapped"
+        ),
         "capacity": section.capacity,
         "enrollment": section.enrollment,
         "seats_available": section.seats_available,
@@ -460,9 +483,11 @@ def session_status_payload() -> dict:
     ]
     soonest = min(expiring, default=None)
     valid = auth.session_valid(cfg)
+    degraded = state_exists and not valid
     payload: dict[str, Any] = {
         "ok": True,
         "authenticated": valid,
+        "degraded": degraded,
         "state_file": str(STATE_PATH),
         "state_exists": state_exists,
         "state_age_seconds": round(age, 1) if age is not None else None,
@@ -477,14 +502,22 @@ def session_status_payload() -> dict:
         "earliest_cookie_domain": soonest[1] if soonest else None,
         "fix_command": FIX_COMMAND,
         "fix_command_alt": FIX_COMMAND_ALT,
-        "login_script": str(REPO_ROOT / "scripts" / "login.py"),
+        "login_script": FIX_COMMAND,
+        "read_hint": "try unw_profile/unw_terms once; read-only tools may still work",
+        "write_hint": "run fix_command before any Banner plan write",
     }
     if valid:
         payload["message"] = "Banner and Degree Works sessions are live."
+    elif degraded:
+        payload["message"] = (
+            "Cached state exists but the live session check failed. Read-only tools "
+            "may still work: try unw_profile or unw_terms once before asking for a "
+            "login. Run fix_command before any Banner plan write."
+        )
     else:
         payload["message"] = (
-            "No usable session: the Banner page rendered as a guest or required a login. "
-            "Tell the user to run the fix_command -- do not improvise a login."
+            "No cached session: run fix_command before using any Banner tool. "
+            "Do not improvise a login."
         )
     return payload
 
@@ -636,6 +669,13 @@ def remaining_payload() -> dict:
         Priority.GEN_ED_FILL.value: 3,
     }
     rows.sort(key=lambda row: (order.get(row["priority"], 9), row["group"], row["title"]))
+    groups: dict[tuple[str, tuple[str, ...]], list[str]] = {}
+    for row in rows:
+        key = (row["title"].strip().lower(), tuple(row["options"]))
+        groups.setdefault(key, []).append(row["id"])
+    for row in rows:
+        key = (row["title"].strip().lower(), tuple(row["options"]))
+        row["shared_title_with"] = [other for other in groups[key] if other != row["id"]]
     return {
         "ok": True,
         "student_name": audit.student_name,
@@ -711,8 +751,10 @@ def search_payload(
     rows = sorted(rows, key=lambda row: (row.subject, row.number, row.section, row.crn))
     total = len(rows)
     offset = max(0, offset)
-    limit = max(0, limit)
+    requested_limit = max(0, limit)
+    limit = min(requested_limit, SEARCH_LIMIT_CAP)
     page = rows[offset : offset + limit] if limit else []
+    next_offset = (offset + len(page)) if limit else None
     return {
         "ok": True,
         "term": term,
@@ -728,6 +770,9 @@ def search_payload(
         "total_matched": total,
         "offset": offset,
         "limit": limit,
+        "requested_limit": requested_limit,
+        "limit_capped": requested_limit > SEARCH_LIMIT_CAP,
+        "next_offset": next_offset if next_offset is not None and next_offset < total else None,
         "count": len(page),
         "catalog": _catalog_meta(snapshot),
         "sections": [section_payload(row) for row in page],
@@ -805,11 +850,24 @@ def course_payload(term: str, crn: str | int, refresh: bool = False) -> dict:
     }
 
 
+def _compact_candidate_payload(section: Section) -> dict:
+    """Small candidate row: enough to choose a section, no repeated detail."""
+    full = section_payload(section)
+    keys = (
+        "crn", "code", "section", "title", "credits", "planning_credits",
+        "credit_range", "seats_available", "open", "availability", "days",
+        "times", "instructors", "attribute_codes", "part_of_term", "unscheduled",
+    )
+    return {key: full.get(key) for key in keys}
+
+
 def candidates_payload(
     term: str,
     requirement: str | None = None,
     refresh: bool = False,
     open_only: bool = True,
+    compact: bool = False,
+    limit: int = 0,
 ) -> dict:
     snapshot = _snapshot(term, refresh)
     audit = AuditClient().audit()
@@ -840,6 +898,8 @@ def candidates_payload(
             open_only=open_only,
             current_term=CURRENT_TERM,
         )
+        total = len(resolution.candidates)
+        selected = resolution.candidates[: max(0, limit)] if limit else resolution.candidates
         rows.append(
             {
                 "requirement": _requirement_payload(
@@ -848,9 +908,14 @@ def candidates_payload(
                 "found": resolution.found,
                 "reason": resolution.reason,
                 "attribute_hits": resolution.attribute_hits,
-                "count": len(resolution.candidates),
+                "count": total,
+                "returned": len(selected),
+                "truncated": len(selected) < total,
                 "candidates": [
-                    section_payload(candidate) for candidate in resolution.candidates
+                    _compact_candidate_payload(candidate)
+                    if compact
+                    else section_payload(candidate)
+                    for candidate in selected
                 ],
             }
         )
@@ -859,6 +924,8 @@ def candidates_payload(
         "term": term,
         "label": term_label(term) if len(term) == 6 else term,
         "open_only": open_only,
+        "compact": compact,
+        "limit": max(0, limit),
         "requirement_count": len(rows),
         "catalog": _catalog_meta(snapshot),
         "requirements": rows,
@@ -868,24 +935,25 @@ def candidates_payload(
 # --------------------------------------------------------------------------- #
 # ratings / conflicts
 # --------------------------------------------------------------------------- #
-def ratings_payload(names: Sequence[str] | str) -> dict:
+def ratings_payload(names: Sequence[str] | str, refresh: bool = False) -> dict:
     wanted = _norm_names(names)
     if not wanted:
         raise ValueError("Pass at least one professor name.")
     provider = RatingProvider()
     rows = []
     for name in wanted:
-        info = provider.get(name)
+        info = provider.get(name, refresh=refresh)
         row = rating_payload(info)
         row["query"] = name
         rows.append(row)
     return {
         "ok": True,
         "count": len(rows),
+        "refresh": refresh,
         "ratings": rows,
         "note": (
             "Unrated is null, not 0.0. n<3 ratings are weak evidence; match confidence "
-            "reflects name ambiguity, not teaching quality."
+            "reflects name ambiguity, not teaching quality. The cache expires after 7 days."
         ),
     }
 
@@ -932,6 +1000,7 @@ def conflicts_payload(
         "conflict_summary": conflict_summary(conflicts),
         "total_credits": round(sum(section.credits or 0 for section in found), 2),
         "grid": render_grid(schedule_sections, include_tba=True) if found else "",
+        "grid_legend": grid_legend(schedule_sections) if found else {},
         "unscheduled": [
             section_payload(section) for section in found if section.unscheduled
         ],
@@ -965,19 +1034,60 @@ def build_constraints(
     avoid_days: Sequence[str] | str | None = None,
     earliest: str | None = None,
     latest: str | None = None,
+    *,
+    min_credits: float = 0,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    required_crns: Sequence[str | int] | str | None = None,
+    required_courses: Sequence[str] | str | None = None,
+    excluded_crns: Sequence[str | int] | str | None = None,
+    excluded_courses: Sequence[str] | str | None = None,
+    credit_overrides: dict[str, float] | None = None,
 ) -> Constraints:
+    if max_credits <= 0:
+        raise ValueError("max_credits must be greater than 0.")
+    if min_credits < 0:
+        raise ValueError("min_credits must be 0 or greater.")
     days = [_parse_day(day) for day in _norm_list(avoid_days)]
+    instructors = _norm_names(avoid_instructors) if avoid_instructors is not None else []
+    overrides: dict[str, float] = {}
+    for crn, hours in (credit_overrides or {}).items():
+        key = str(crn).strip()
+        if not key:
+            continue
+        value = float(hours)
+        if value < 0:
+            raise ValueError(f"hours for CRN {key} must be 0 or greater.")
+        overrides[key] = value
     return Constraints(
         max_credits=float(max_credits),
+        min_credits=float(min_credits),
         avoid_days=days,
         earliest=_parse_clock(earliest),
         latest=_parse_clock(latest),
+        avoid_instructors=instructors,
+        exclude_arrangement=exclude_arrangement,
+        required_crns=_norm_list(required_crns),
+        required_courses=_norm_list(required_courses),
+        excluded_crns=_norm_list(excluded_crns),
+        excluded_courses=_norm_list(excluded_courses),
+        credit_overrides=overrides,
     )
+
+
+def _active_term(raw: dict) -> str:
+    """The student's active term from the audit, falling back to the configured one."""
+    degree = raw.get("degreeInformation") or {}
+    for row in degree.get("degreeDataArray") or []:
+        candidate = str((row or {}).get("activeTerm") or "").strip()
+        if len(candidate) == 6 and candidate.isdigit():
+            return candidate
+    return CURRENT_TERM
 
 
 def _planner(
     terms: Sequence[str], refresh: bool = False
-) -> tuple[Planner, dict[str, TermSnapshot], Audit, dict]:
+) -> tuple[Planner, dict[str, TermSnapshot], Audit, dict, str]:
     client = AuditClient()
     client.student()
     raw = client.fetch()
@@ -985,17 +1095,18 @@ def _planner(
     snapshots: dict[str, TermSnapshot] = {}
     for term in terms:
         snapshots[term] = _snapshot(term, refresh)
+    current_term = _active_term(raw)
     planner = Planner(
         audit,
         snapshots,
         ratings=RatingProvider(),
         prereqs=PrereqProvider(),
-        current_term=CURRENT_TERM,
+        current_term=current_term,
     )
-    return planner, snapshots, audit, raw
+    return planner, snapshots, audit, raw, current_term
 
 
-def _draft_selection_payload(selection) -> dict:
+def _draft_selection_payload(selection, section: Section | None = None) -> dict:
     return {
         "crn": selection.crn,
         "course": selection.course,
@@ -1006,10 +1117,14 @@ def _draft_selection_payload(selection) -> dict:
         "days": selection.days,
         "times": selection.times,
         "credits": selection.credits,
+        "credit_range": section.credit_range if section is not None else None,
+        "credits_low": section.credits_low if section is not None else None,
+        "credits_high": section.credits_high if section is not None else None,
         "seats": selection.seats,
         "open": selection.open,
         "availability": selection.availability,
         "verify_at_registration": selection.verify_at_registration,
+        "prereq_unverified": selection.prereq_unverified,
         "requirement_id": selection.requirement_id,
         "requirement": selection.requirement,
         "group": selection.group,
@@ -1022,14 +1137,21 @@ def _draft_selection_payload(selection) -> dict:
 def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
     rated = [row.rating for row in draft.selections if row.rating.rated]
     average = round(sum(row.rating or 0 for row in rated) / len(rated), 2) if rated else None
+    selections = []
+    for selection in draft.selections:
+        section = snapshot.by_crn(selection.crn) if snapshot is not None else None
+        selections.append(_draft_selection_payload(selection, section))
     payload = {
         "term": draft.term,
         "label": draft.label or term_label(draft.term),
         "total_credits": draft.total_credits,
+        "min_credits": draft.min_credits,
+        "min_credits_met": draft.min_credits_met,
         "selection_count": len(draft.selections),
-        "selections": [
-            _draft_selection_payload(selection) for selection in draft.selections
-        ],
+        "selections": selections,
+        "pinned": [pin.model_dump() for pin in draft.pinned],
+        "pin_errors": list(draft.errors),
+        "credit_overrides": dict(draft.credit_overrides),
         "unplaced": [
             {
                 "requirement_id": item.requirement_id,
@@ -1041,6 +1163,17 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
         ],
         "warnings": list(draft.warnings),
         "grid": draft.grid,
+        "grid_legend": (
+            grid_legend(
+                [
+                    section.to_schedule_section()
+                    for selection in draft.selections
+                    if (section := snapshot.by_crn(selection.crn)) is not None
+                ]
+            )
+            if snapshot is not None
+            else {}
+        ),
         "score_breakdown": list(draft.score_breakdown),
         "avg_rmp_rating": average,
         "rated_picks": len(rated),
@@ -1062,18 +1195,39 @@ def draft_payload(
     latest: str | None = None,
     include_summer: bool = False,
     refresh: bool = False,
+    min_credits: float = 0,
+    required_crns: Sequence[str | int] | str | None = None,
+    required_courses: Sequence[str] | str | None = None,
+    exclude_crns: Sequence[str | int] | str | None = None,
+    exclude_courses: Sequence[str] | str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     if profile not in {"max_rated"}:
         raise ValueError(
             f"Unknown profile {profile!r}; only 'max_rated' is implemented "
             "(the planner's ranking maximises RMP rating with unrated last)."
         )
-    constraints = build_constraints(max_credits, avoid_days, earliest, latest)
+    constraints = build_constraints(
+        max_credits,
+        avoid_days,
+        earliest,
+        latest,
+        min_credits=min_credits,
+        avoid_instructors=avoid_instructors,
+        exclude_arrangement=exclude_arrangement,
+        required_crns=required_crns,
+        required_courses=required_courses,
+        excluded_crns=exclude_crns,
+        excluded_courses=exclude_courses,
+        credit_overrides=hours,
+    )
     terms = [term]
     summer = _next_summer(term) if include_summer else None
     if summer:
         terms.append(summer)
-    planner, snapshots, audit, _raw = _planner(terms, refresh)
+    planner, snapshots, audit, _raw, current_term = _planner(terms, refresh)
     with _BANNER_LOCK:
         draft = planner.draft(term, constraints)
     payload: dict[str, Any] = {
@@ -1081,24 +1235,53 @@ def draft_payload(
         "requested": {
             "term": term,
             "max_credits": max_credits,
+            "min_credits": min_credits,
             "profile": profile,
             "avoid_days": [day.value for day in constraints.avoid_days],
             "earliest": constraints.earliest.strftime("%H:%M") if constraints.earliest else None,
             "latest": constraints.latest.strftime("%H:%M") if constraints.latest else None,
             "include_summer": include_summer,
+            "required_crns": list(constraints.required_crns),
+            "required_courses": list(constraints.required_courses),
+            "excluded_crns": list(constraints.excluded_crns),
+            "excluded_courses": list(constraints.excluded_courses),
+            "avoid_instructors": list(constraints.avoid_instructors),
+            "exclude_arrangement": constraints.exclude_arrangement,
+            "hours": dict(constraints.credit_overrides),
         },
+        "current_term": current_term,
         "student": audit.student_name,
         "catalog": _catalog_meta(snapshots[term]),
         "draft": _draft_payload(draft, snapshots[term]),
     }
+    if draft.errors:
+        payload["ok"] = False
+        payload["error"] = "pinned course(s) could not be placed: " + "; ".join(draft.errors)
+        payload["error_type"] = "PinError"
+        payload["hint"] = (
+            "Adjust the pinned CRN/course, the term, or the exclusions; the partial "
+            "draft is still included under 'draft'."
+        )
     if summer and summer in snapshots:
         placed = set()
         for selection in draft.selections:
             placed.add(selection.requirement_id)
             placed.update(selection.covers)
         remaining = [item for item in planner.requirements if item.id not in placed]
+        # A spring section satisfies a summer prerequisite even though it is not
+        # completed yet; carry the planned codes forward explicitly.
+        spring_passed = set(planner.passed)
+        spring_passed.update(selection.course.upper() for selection in draft.selections)
+        # Pins and the minimum load describe the requested term. The summer pass
+        # only picks up requirements that did not fit, so it must not re-place a
+        # pinned course or force the same credit load.
+        summer_constraints = constraints.model_copy(
+            update={"required_crns": [], "required_courses": [], "min_credits": 0}
+        )
         with _BANNER_LOCK:
-            summer_draft = planner.draft(summer, constraints, requirements=remaining)
+            summer_draft = planner.draft(
+                summer, summer_constraints, requirements=remaining, passed=spring_passed
+            )
         payload["summer"] = {
             "catalog": _catalog_meta(snapshots[summer]),
             "draft": _draft_payload(summer_draft, snapshots[summer]),
@@ -1153,7 +1336,7 @@ def roadmap_payload(
     wanted = _norm_list(terms)
     planned_terms = wanted or _term_sequence(start_term, 4, include_summer)
     constraints = build_constraints(max_credits)
-    planner, snapshots, audit, raw = _planner(planned_terms, refresh)
+    planner, snapshots, audit, raw, current_term = _planner(planned_terms, refresh)
     catalogs = [_catalog_meta(snapshot) for snapshot in snapshots.values()]
     with _BANNER_LOCK:
         roadmap = planner.roadmap(planned_terms, constraints)
@@ -1210,12 +1393,17 @@ def roadmap_payload(
         "terms": planned_terms,
         "include_summer": include_summer,
         "max_credits": max_credits,
+        "current_term": current_term,
         "anticipated_graduation": anticipated,
         "student": audit.student_name,
         "catalogs": catalogs,
         "planned": rows,
         "final_remaining": roadmap.final_remaining,
         "risks": risks,
+        "note": (
+            "Roadmap honors max_credits and include_summer only. Course/CRN pins, "
+            "minimum-load and instructor exclusions apply to unw_plan_draft."
+        ),
     }
 
 
@@ -1370,6 +1558,8 @@ def _list_plan_rows(
     """
     try:
         return client.list_plans(term), True, ""
+    except PlanAheadUnavailable as exc:
+        return [], False, str(exc)
     except auth.SessionExpiredError:
         if not auth.session_valid():
             raise
@@ -1434,6 +1624,155 @@ def _resolve_plan(plans: Sequence[Plan], reference: str | int) -> Plan:
     )
 
 
+def _plan_total(plan: Plan) -> float:
+    return round(sum(course.credits or 0 for course in plan.courses), 2)
+
+
+def _course_identity(course) -> tuple:
+    if course.id is not None:
+        return ("id", course.id)
+    return ("row", course.subject, course.number, course.crn or "", course.title)
+
+
+def _plan_state(plan: Plan) -> dict:
+    return {
+        "plan_id": plan.id,
+        "plan_name": plan.name,
+        "term": plan.term,
+        "sequence_number": plan.sequence_number,
+        "course_count": len(plan.courses),
+        "total_credits": _plan_total(plan),
+        "courses": [_plan_course_payload(course) for course in plan.courses],
+    }
+
+
+def _plan_diff(before: Plan | None, after: Plan | None, action: str) -> dict:
+    """Rows added/removed and credits before/after, from two real plan reads."""
+    before_courses = list(before.courses) if before else []
+    after_courses = list(after.courses) if after else []
+    before_keys = {_course_identity(course) for course in before_courses}
+    after_keys = {_course_identity(course) for course in after_courses}
+    anchor = after or before
+    credits_before = round(sum(course.credits or 0 for course in before_courses), 2)
+    credits_after = round(sum(course.credits or 0 for course in after_courses), 2)
+    return {
+        "action": action,
+        "plan_id": anchor.id if anchor else None,
+        "plan_name": anchor.name if anchor else None,
+        "rows_added": [
+            _plan_course_payload(course)
+            for course in after_courses
+            if _course_identity(course) not in before_keys
+        ],
+        "rows_removed": [
+            _plan_course_payload(course)
+            for course in before_courses
+            if _course_identity(course) not in after_keys
+        ],
+        "course_count_before": len(before_courses),
+        "course_count_after": len(after_courses),
+        "credits_before": credits_before,
+        "credits_after": credits_after,
+        "credits_delta": round(credits_after - credits_before, 2),
+    }
+
+
+def _write_readback_failure(action: str, plan_id: int, exc: Exception) -> dict:
+    return {
+        "ok": False,
+        "error": (
+            f"write {action} was sent but the Banner read-back failed: "
+            f"{type(exc).__name__}: {exc}"
+        ),
+        "writes_performed": [action],
+        "plan_id": plan_id,
+        "hint": (
+            "Do not repeat the write. Call unw_banner_plans to inspect the plan, "
+            "then decide with the user whether a retry is needed."
+        ),
+    }
+
+
+def _refuse_write(
+    intended_effect: str, current_state: dict, required: dict, reason: str = ""
+) -> dict:
+    message = f"Confirmation required: {intended_effect}. No write was performed."
+    if reason:
+        message = f"{message} {reason}"
+    return {
+        "ok": False,
+        "refused": True,
+        "confirmation_required": True,
+        "writes_performed": [],
+        "intended_effect": intended_effect,
+        "current_state": current_state,
+        "required_confirmation": required,
+        "error": message,
+        "hint": (
+            "Show the intended effect to the user and get explicit approval before "
+            "re-calling with the required confirmation."
+        ),
+    }
+
+
+def _plan_summaries(plans: Sequence[Plan]) -> list[dict]:
+    return [
+        {
+            "id": plan.id,
+            "name": plan.name,
+            "sequence_number": plan.sequence_number,
+            "preferred": plan.preferred,
+            "course_count": len(plan.courses),
+            "total_credits": _plan_total(plan),
+        }
+        for plan in plans
+    ]
+
+
+def _describe_add_target(
+    term: str,
+    crn: str | int | None,
+    subject: str | None,
+    number: str | int | None,
+) -> str:
+    snapshot = _snapshot(term)
+    if crn is not None:
+        section = snapshot.by_crn(str(crn))
+        if section is None:
+            raise ValueError(
+                f"CRN {crn} is not in term {term}; use unw_search to find the right section."
+            )
+        credits = f"{section.credits:g} cr" if section.credits is not None else "variable credits"
+        return f"{section.code} CRN {section.crn} ({section.title}, {credits})"
+    assert subject and number is not None
+    sections = snapshot.by_course(subject, str(number))
+    if not sections:
+        raise ValueError(f"{subject.upper()} {number} is not offered in {term}.")
+    return (
+        f"{subject.upper()} {number} (course-level; {len(sections)} section(s) offered in {term})"
+    )
+
+
+def _match_plan_course(
+    plan: Plan,
+    *,
+    crn: str | int | None = None,
+    subject: str | None = None,
+    number: str | int | None = None,
+):
+    for course in plan.courses:
+        if crn is not None and course.crn == str(crn):
+            return course
+        if (
+            subject
+            and number is not None
+            and course.subject.upper() == subject.upper()
+            and course.number == str(number)
+        ):
+            return course
+    return None
+
+
 def plan_create_payload(term: str, name: str) -> dict:
     client = PlanClient()
     with _BANNER_LOCK:
@@ -1445,12 +1784,31 @@ def plan_create_payload(term: str, name: str) -> dict:
                 f"Term {term} already has {len(plans)} plans; Banner allows at most 5 per term."
             )
         plan = client.create_plan(name, term)
+        try:
+            final = client.get_plan(plan.id, term)
+            plans_after = client.list_plans(term)
+        except Exception as exc:
+            return _write_readback_failure("create_plan", plan.id, exc)
+    diff = _plan_diff(None, final, "create_plan")
+    diff["plan_count_before"] = len(plans)
+    diff["plan_count_after"] = len(plans_after)
     return {
         "ok": True,
-        "created": plan_payload(plan),
         "term": term,
+        "created": plan_payload(final),
+        "diff": diff,
+        "writes_performed": ["create_plan"],
         "note": "The new plan is term-scoped; read it back with unw_banner_plans(term).",
     }
+
+
+def _passed_codes_or_none() -> set[str] | None:
+    """Audit course codes for the prereq gate, or None when the audit is unavailable."""
+    try:
+        return applied_codes(AuditClient().audit())
+    except Exception as exc:
+        logger.warning("audit unavailable for plan prereq gate: %s", type(exc).__name__)
+        return None
 
 
 def plan_add_payload(
@@ -1459,6 +1817,7 @@ def plan_add_payload(
     crn: str | int | None = None,
     subject: str | None = None,
     number: str | int | None = None,
+    passed_codes: set[str] | None = None,
 ) -> dict:
     if crn is None and not (subject and number is not None):
         raise ValueError("Pass crn, or subject and number.")
@@ -1474,13 +1833,20 @@ def plan_add_payload(
             crn=str(crn) if crn is not None else None,
             subject=subject,
             number=str(number) if number is not None else None,
+            passed_codes=passed_codes,
         )
-        updated = client.get_plan(resolved.id, term)
+        try:
+            final = client.get_plan(resolved.id, term)
+        except Exception as exc:
+            return _write_readback_failure("add_course", resolved.id, exc)
     return {
         "ok": True,
         "term": term,
-        "plan": plan_payload(updated),
+        "plan": plan_payload(final),
         "added": _plan_course_payload(course),
+        "diff": _plan_diff(resolved, final, "add_course"),
+        "writes_performed": ["add_course"],
+        "prereq_checked": passed_codes is not None,
     }
 
 
@@ -1499,14 +1865,24 @@ def plan_remove_payload(
         if not available:
             raise PlanError(unavailable_note)
         resolved = _resolve_plan(plans, plan)
-        updated = client.remove_course(
+        client.remove_course(
             resolved.id,
             term,
             crn=str(crn) if crn is not None else None,
             subject=subject,
             number=str(number) if number is not None else None,
         )
-    return {"ok": True, "term": term, "plan": plan_payload(updated)}
+        try:
+            final = client.get_plan(resolved.id, term)
+        except Exception as exc:
+            return _write_readback_failure("remove_course", resolved.id, exc)
+    return {
+        "ok": True,
+        "term": term,
+        "plan": plan_payload(final),
+        "diff": _plan_diff(resolved, final, "remove_course"),
+        "writes_performed": ["remove_course"],
+    }
 
 
 def plan_delete_payload(term: str, plan: str | int) -> dict:
@@ -1517,17 +1893,165 @@ def plan_delete_payload(term: str, plan: str | int) -> dict:
             raise PlanError(unavailable_note)
         resolved = _resolve_plan(plans, plan)
         client.delete_plan(resolved.id, term)
-        remaining = []
         try:
-            remaining = client.list_plans(term)
-        except Exception:  # noqa: BLE001 - deletion already succeeded
-            pass
+            plans_after = client.list_plans(term)
+        except Exception as exc:
+            return _write_readback_failure("delete_plan", resolved.id, exc)
+    diff = _plan_diff(resolved, None, "delete_plan")
+    diff["plan_count_before"] = len(plans)
+    diff["plan_count_after"] = len(plans_after)
     return {
         "ok": True,
         "term": term,
         "deleted": {"id": resolved.id, "name": resolved.name},
-        "remaining_plans": len(remaining),
+        "remaining_plans": len(plans_after),
+        "diff": diff,
+        "writes_performed": ["delete_plan"],
     }
+
+
+def plan_create_guarded(term: str, name: str, confirm: bool) -> dict:
+    client = PlanClient()
+    with _BANNER_LOCK:
+        plans, available, unavailable_note = _list_plan_rows(client, term)
+        if not available:
+            raise PlanError(unavailable_note)
+        if len(plans) >= 5:
+            raise PlanError(
+                f"Term {term} already has {len(plans)} plans; Banner allows at most 5 per term."
+            )
+        state = {
+            "term": term,
+            "plan_count": len(plans),
+            "plan_limit": 5,
+            "plans": _plan_summaries(plans),
+        }
+        effect = (
+            f"would create a Plan Ahead worksheet {name!r} for term {term} "
+            f"(current plans: {len(plans)}/5)"
+        )
+        if not confirm:
+            return _refuse_write(effect, state, {"confirm": True})
+        return plan_create_payload(term, name)
+
+
+def plan_add_guarded(
+    term: str,
+    plan: str | int,
+    confirm: bool,
+    crn: str | int | None = None,
+    subject: str | None = None,
+    number: str | int | None = None,
+) -> dict:
+    if crn is None and not (subject and number is not None):
+        raise ValueError("Pass crn, or subject and number.")
+    client = PlanClient()
+    with _BANNER_LOCK:
+        plans, available, unavailable_note = _list_plan_rows(client, term)
+        if not available:
+            raise PlanError(unavailable_note)
+        resolved = _resolve_plan(plans, plan)
+        existing = _match_plan_course(resolved, crn=crn, subject=subject, number=number)
+        if existing is not None:
+            raise DuplicateCourseError(
+                f"{existing.code} CRN {existing.crn or '-'} is already in plan "
+                f"{resolved.id} {resolved.name!r}; remove it first or pick another section."
+            )
+        target = _describe_add_target(term, crn, subject, number)
+        state = _plan_state(resolved)
+        effect = (
+            f"would add {target} to plan {resolved.id} {resolved.name!r} "
+            f"(currently {state['course_count']} rows, {state['total_credits']:g} credits)"
+        )
+        if not confirm:
+            return _refuse_write(effect, state, {"confirm": True})
+        passed_codes = _passed_codes_or_none()
+        return plan_add_payload(
+            term,
+            resolved.id,
+            crn=crn,
+            subject=subject,
+            number=number,
+            passed_codes=passed_codes,
+        )
+
+
+def plan_remove_guarded(
+    term: str,
+    plan: str | int,
+    confirm: bool,
+    crn: str | int | None = None,
+    subject: str | None = None,
+    number: str | int | None = None,
+) -> dict:
+    if crn is None and not (subject and number is not None):
+        raise ValueError("Pass crn, or subject and number.")
+    client = PlanClient()
+    with _BANNER_LOCK:
+        plans, available, unavailable_note = _list_plan_rows(client, term)
+        if not available:
+            raise PlanError(unavailable_note)
+        resolved = _resolve_plan(plans, plan)
+        target = _match_plan_course(resolved, crn=crn, subject=subject, number=number)
+        if target is None:
+            rows = "; ".join(
+                f"{course.code} CRN {course.crn or '-'}" for course in resolved.courses
+            )
+            raise PlanNotFoundError(
+                f"No matching course in plan {resolved.id} ({crn=}, {subject=}, {number=}). "
+                f"Rows: {rows or 'none'}"
+            )
+        state = _plan_state(resolved)
+        credits = f"{target.credits:g} cr" if target.credits is not None else "variable credits"
+        projected = round(state["total_credits"] - (target.credits or 0), 2)
+        effect = (
+            f"would remove {target.code} CRN {target.crn or '-'} ({credits}) from plan "
+            f"{resolved.id} {resolved.name!r}; credits {state['total_credits']:g} -> "
+            f"{projected:g}"
+        )
+        if not confirm:
+            return _refuse_write(effect, state, {"confirm": True})
+        return plan_remove_payload(
+            term,
+            resolved.id,
+            crn=crn,
+            subject=subject,
+            number=number,
+        )
+
+
+def plan_delete_guarded(
+    term: str,
+    plan: str | int,
+    confirm: bool,
+    confirm_name: str | None,
+) -> dict:
+    client = PlanClient()
+    with _BANNER_LOCK:
+        plans, available, unavailable_note = _list_plan_rows(client, term)
+        if not available:
+            raise PlanError(unavailable_note)
+        resolved = _resolve_plan(plans, plan)
+        state = _plan_state(resolved)
+        required = {"confirm": True, "confirm_name": resolved.name}
+        effect = (
+            f"would DELETE plan {resolved.id} {resolved.name!r} for term {term} "
+            f"({state['course_count']} rows, {state['total_credits']:g} credits); "
+            "deletion cannot be undone"
+        )
+        if not confirm:
+            return _refuse_write(effect, state, required)
+        if confirm_name != resolved.name:
+            return _refuse_write(
+                effect,
+                state,
+                required,
+                reason=(
+                    f"confirm_name {confirm_name!r} does not match the exact plan name "
+                    f"{resolved.name!r}."
+                ),
+            )
+        return plan_delete_payload(term, resolved.id)
 
 
 # --------------------------------------------------------------------------- #
@@ -1559,7 +2083,7 @@ def registration_preview_payload(
     prereq_note = ""
     try:
         passed = applied_codes(AuditClient().audit())
-    except Exception as exc:  # noqa: BLE001 - preview must still report eligibility
+    except Exception as exc:
         passed = None
         prereq_note = f"prerequisite check skipped: audit unavailable ({type(exc).__name__})"
     prereq_rows = []
@@ -1573,6 +2097,9 @@ def registration_preview_payload(
                         "crn": section.crn,
                         "course": section.code,
                         "prereq_ok": ok,
+                        "prereq_status": (
+                            "verified" if ok is True else "blocked" if ok is False else "unknown"
+                        ),
                         "reason": reason,
                     }
                 )
@@ -1594,7 +2121,9 @@ def registration_preview_payload(
             "fwd_url": eligibility.fwd_url,
         },
         "banner_message": (
-            "; ".join(failures) if failures else "Banner reports this term as registration-eligible."
+            "; ".join(failures)
+            if failures
+            else "Banner reports this term as registration-eligible."
         ),
         "sections": [section_payload(section) for section in sections],
         "missing_crns": missing,
@@ -1615,15 +2144,87 @@ def registration_preview_payload(
 
 
 # --------------------------------------------------------------------------- #
+# registration readiness (read-only)
+# --------------------------------------------------------------------------- #
+def registration_window_payload(term: str | None = None) -> dict:
+    """Read-only time-ticket window(s) from Banner's registration eligibility text."""
+    from .registration import countdown
+    from .registration import window as registration_window
+
+    client = SSBClient(auth.ensure())
+    next_term: str | None = None
+    with _BANNER_LOCK:
+        try:
+            listed = client.get_terms()
+        except Exception:
+            listed = []
+        codes = [item.code for item in listed if "view only" not in item.description.lower()]
+        if term:
+            wanted = [str(term).strip()]
+        else:
+            upcoming = [code for code in codes if _term_key(code) > _term_key(CURRENT_TERM)]
+            next_term = min(upcoming, key=_term_key) if upcoming else None
+            wanted = [CURRENT_TERM]
+            if next_term and next_term != CURRENT_TERM:
+                wanted.append(next_term)
+        rows = []
+        for code in wanted:
+            try:
+                result = registration_window(code, ssb=client)
+                data = result.model_dump(mode="json")
+                data.update(
+                    {
+                        "term_label": term_label(code) if len(code) == 6 else code,
+                        "opens_in_seconds": result.opens_in_seconds,
+                        "countdown": countdown(result.opens_in_seconds),
+                    }
+                )
+                rows.append(data)
+            except Exception as exc:
+                rows.append(
+                    {
+                        "term": code,
+                        "term_label": term_label(code) if len(code) == 6 else code,
+                        "eligible": None,
+                        "parse_status": "unknown",
+                        "start": None,
+                        "end": None,
+                        "reason": "window probe failed",
+                        "raw_text": "",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "opens_in_seconds": None,
+                        "countdown": "unknown",
+                    }
+                )
+    return {
+        "ok": True,
+        "read_only": True,
+        "writes_performed": [],
+        "timezone": "America/Chicago",
+        "requested_term": term,
+        "current_term": CURRENT_TERM,
+        "next_term": next_term,
+        "count": len(rows),
+        "windows": rows,
+        "note": (
+            "READ-ONLY: parses Banner's registration eligibility prose "
+            "(POST /term/search?mode=registration) into America/Chicago datetimes. "
+            "It never registers, adds, drops or withdraws. parse_status=unknown means "
+            "Banner's text was not understood; report raw_text verbatim."
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # MCP server
 # --------------------------------------------------------------------------- #
 INSTRUCTIONS = """\
 UNW planner: Degree Works audit + Banner 9 class search + planning tools.
 
 START HERE
-- Call unw_session() first. If authenticated=false, tell the user to run the exact
-  fix_command it returns (scripts/login.py --force, which handles TOTP). Never
-  improvise a login, never ask the user for a password or TOTP code.
+- Call unw_session() first. If authenticated=false, try one read tool
+  (unw_profile/unw_terms); reads may work when degraded. Stop only on auth/session
+  errors or before a write, then use fix_command; never improvise a login.
 - Then unw_profile() and unw_remaining(). The audit already knows the student's
   majors, minors, catalog year, classifications and advisors: never ask the student
   for facts the audit can answer.
@@ -1654,15 +2255,20 @@ RATINGS
 BANNER PLANS (term-scoped)
 - Plans belong to one term. unw_banner_plans(term) returning [] means "no plans
   for THIS term", not "no plans exist". Other terms' plans are invisible.
-- Before any create/add/remove/delete, read the plan list, show the exact change,
-  and get explicit user confirmation. Add and remove need the plan id or exact
-  name; ambiguous names are rejected with candidates, not guessed.
+- Confirmation is ENFORCED by the server, not advisory. Every write tool requires
+  confirm=true; unw_banner_plan_delete also requires confirm_name equal to the
+  plan's exact name. Calling without them returns refused=true, the intended
+  effect and the current plan state, and performs no write.
+- Still show that intended effect to the user and get explicit approval before
+  re-calling with confirmation. Add/remove need a plan id or exact name;
+  ambiguous names are rejected with candidates, never guessed.
+- Every successful write returns a read-back before/after diff (rows, credits). Report it.
 - Do not create/delete plans just to test something: the student's plans are real.
 
 REGISTRATION
-- unw_register_preview is a DRY RUN. It never POSTs add/drop/register. Registration
-  is currently ineligible for every term; report Banner's eligibility failure text
-  verbatim instead of implying registration can proceed.
+- unw_register_preview is a DRY RUN. It never POSTs add/drop/register. Use
+  unw_registration_window for time tickets; report Banner's eligibility failure
+  text verbatim instead of implying registration can proceed.
 
 OUTPUT
 - Always show the ASCII grid and a one-line rationale per pick. Report
@@ -1688,9 +2294,12 @@ mcp = MCPServer(
 
 @mcp.tool(structured_output=False)
 def unw_session() -> dict:
-    """Check the UNW session: authenticated flag, state-file age, cookie count and
-    earliest cookie expiry (values are never exposed), plus the exact command that
-    repairs an expired session. Call this before any other tool."""
+    """Check the UNW session: ``authenticated`` (live check), ``degraded`` (state
+    exists but the live check failed), state-file age, cookie count and earliest
+    cookie expiry (values are never exposed), plus ``read_hint``/``write_hint``
+    and the exact packaged CLI command that repairs an expired session. Call this
+    before any other tool. If unauthenticated but degraded, try one read tool
+    before asking for a login."""
     return _safe(session_status_payload)
 
 
@@ -1714,8 +2323,9 @@ def unw_audit(group: str | None = None) -> dict:
 @mcp.tool(structured_output=False)
 def unw_remaining() -> dict:
     """Unmet requirements only: id, title, parent group, kind, credits remaining,
-    pick-N progress, course/attribute/wildcard options, status and priority class.
-    This is the authoritative "what is left" list."""
+    pick-N progress, course/attribute/wildcard options, status, priority class and
+    ``shared_title_with`` (other ids with the same title/options: double-counting
+    risk). This is the authoritative "what is left" list."""
     return _safe(remaining_payload)
 
 
@@ -1744,7 +2354,8 @@ def unw_search(
     """Search one term's sections (normalised rows: CRN, course, title, credits,
     seats, days/times, faculty, attributes, availability). Banner ignores the
     attribute/instructor/open-only query parameters, so filtering happens
-    client-side over a cached term snapshot. Paginate with limit/offset."""
+    client-side over a cached term snapshot. ``limit`` is capped at 200; when
+    ``limit_capped`` is true follow ``next_offset`` to page through the rest."""
     return _safe(
         search_payload,
         term,
@@ -1770,20 +2381,30 @@ def unw_course(term: str, crn: str | int, refresh: bool = False) -> dict:
 
 @mcp.tool(structured_output=False)
 def unw_candidates(
-    term: str, requirement: str | None = None, refresh: bool = False
+    term: str,
+    requirement: str | None = None,
+    refresh: bool = False,
+    open_only: bool = True,
+    compact: bool = False,
+    limit: int = 0,
 ) -> dict:
     """Resolve unmet requirements to sections offered in ``term`` (wraps the
     catalog resolver). ``requirement`` matches an id, title, parent group or
     target; omit it for every unmet requirement. Every empty result carries the
-    reason (never offered / all closed / already completed)."""
-    return _safe(candidates_payload, term, requirement, refresh)
+    reason (never offered / all closed / already completed). ``limit`` caps
+    candidates per requirement (0=all); ``compact`` omits repeated section
+    detail. One requirement can be large, so prefer compact/limit for broad
+    queries."""
+    return _safe(candidates_payload, term, requirement, refresh, open_only, compact, limit)
 
 
 @mcp.tool(structured_output=False)
-def unw_ratings(names: Sequence[str] | str) -> dict:
+def unw_ratings(names: Sequence[str] | str, refresh: bool = False) -> dict:
     """Batch Rate My Professors lookup. Accepts "Last, First" or "First Last".
-    Unrated professors return rating=null (never 0.0); weak_evidence flags n<3."""
-    return _safe(ratings_payload, names)
+    Unrated professors return rating=null (never 0.0); weak_evidence flags n<3.
+    Cache entries expire after 7 days; ``refresh=True`` refetches now. Transient
+    RMP failures are never cached."""
+    return _safe(ratings_payload, names, refresh)
 
 
 @mcp.tool(structured_output=False)
@@ -1806,12 +2427,26 @@ def unw_plan_draft(
     latest: str | None = None,
     include_summer: bool = False,
     refresh: bool = False,
+    min_credits: float = 0,
+    required_crns: Sequence[str | int] | str | None = None,
+    required_courses: Sequence[str] | str | None = None,
+    exclude_crns: Sequence[str | int] | str | None = None,
+    exclude_courses: Sequence[str] | str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     """Draft a conflict-free term plan from the audit, prioritizing major-required
-    courses, then major pools, then gen-ed by RMP rating. Returns per-pick
-    rationale, credits, average RMP, ASCII grid, verification problems and every
-    unplaced requirement with its reason. include_summer=True also drafts the
-    following summer for requirements that did not fit."""
+    courses, then major pools, then gen-ed by RMP rating.
+
+    ``required_crns``/``required_courses`` pin sections the student insists on;
+    each pin reports placed/unavailable/conflict/prereq_blocked/excluded/budget and
+    a failed pin makes ok=false. ``exclude_crns``/``exclude_courses`` remove
+    candidates. ``min_credits`` keeps filling elective pools until the load is met
+    (and reports min_credits_met). ``hours`` maps a CRN to the credit hours to
+    reserve for a variable-credit section (default: the low end). Pins apply to
+    this single-term draft only, not to unw_roadmap. include_summer=True also
+    drafts the following summer for requirements that did not fit."""
     return _safe(
         draft_payload,
         term,
@@ -1822,6 +2457,14 @@ def unw_plan_draft(
         latest,
         include_summer,
         refresh,
+        min_credits,
+        required_crns,
+        required_courses,
+        exclude_crns,
+        exclude_courses,
+        avoid_instructors,
+        exclude_arrangement,
+        hours,
     )
 
 
@@ -1833,10 +2476,12 @@ def unw_roadmap(
     max_credits: float = 16,
     refresh: bool = False,
 ) -> dict:
-    """Multi-term plan starting at ``start_term`` (default: the next four
-    non-summer terms; summer only when include_summer). Carries requirements and
-    prerequisites forward, reports terms with no published catalog, and returns
-    graduation-risk notes against the audit's anticipated graduation term."""
+    """Multi-term plan starting at ``start_term`` (default: the start term plus
+    three non-summer terms; summer only when include_summer). Carries requirements
+    and prerequisites forward, reports terms with no published catalog, and returns
+    graduation-risk notes against the audit's anticipated graduation term. Course
+    pins, minimum-load and instructor exclusions are draft-only: use
+    unw_plan_draft for those."""
     return _safe(roadmap_payload, start_term, terms, include_summer, max_credits, refresh)
 
 
@@ -1862,47 +2507,65 @@ def unw_banner_plans(term: str) -> dict:
 
 
 @mcp.tool(structured_output=False)
-def unw_banner_plan_create(term: str, name: str) -> dict:
+def unw_banner_plan_create(term: str, name: str, confirm: bool) -> dict:
     """Create a named Banner Plan Ahead worksheet for ``term`` (writes to Banner).
-    Only call after explicit user confirmation; the student may hold at most five
-    plans per term. Names cannot be renamed later -- create/delete instead."""
-    return _safe(plan_create_payload, term, name)
+
+    Confirmation is ENFORCED, not advisory: ``confirm`` is required and must be
+    true, otherwise the tool returns the intended effect and the current plan
+    count without writing. Verify the effect with the user first. The student may
+    hold at most five plans per term; names cannot be renamed later."""
+    return _safe(plan_create_guarded, term, name, confirm)
 
 
 @mcp.tool(structured_output=False)
 def unw_banner_plan_add(
     term: str,
     plan: str | int,
+    confirm: bool,
     crn: str | int | None = None,
     subject: str | None = None,
     number: str | int | None = None,
 ) -> dict:
     """Add a section (crn) or a course (subject+number) to a Banner plan (writes
-    to Banner). ``plan`` is a plan id or exact name; ambiguous names are rejected
-    with candidates. Confirm the exact change with the user first."""
-    return _safe(plan_add_payload, term, plan, crn, subject, number)
+    to Banner).
+
+    Confirmation is ENFORCED: ``confirm`` is required and must be true, otherwise
+    the tool names the exact section/course and current plan state and performs no
+    write. ``plan`` is an id or exact name; ambiguous names are rejected with
+    candidates. Successful writes return a before/after diff read back from Banner."""
+    return _safe(plan_add_guarded, term, plan, confirm, crn, subject, number)
 
 
 @mcp.tool(structured_output=False)
 def unw_banner_plan_remove(
     term: str,
     plan: str | int,
+    confirm: bool,
     crn: str | int | None = None,
     subject: str | None = None,
     number: str | int | None = None,
 ) -> dict:
-    """Remove one course row from a Banner plan (writes to Banner). Identify the
-    row by crn or subject+number; ``plan`` is an id or exact name. Confirm with
-    the user first and re-read the plan afterwards."""
-    return _safe(plan_remove_payload, term, plan, crn, subject, number)
+    """Remove one course row from a Banner plan (writes to Banner).
+
+    Confirmation is ENFORCED: ``confirm`` is required and must be true, otherwise
+    the tool names the exact row and projected credits and performs no write.
+    Identify the row by crn or subject+number; ``plan`` is an id or exact name.
+    Successful writes return a before/after diff read back from Banner."""
+    return _safe(plan_remove_guarded, term, plan, confirm, crn, subject, number)
 
 
 @mcp.tool(structured_output=False)
-def unw_banner_plan_delete(term: str, plan: str | int) -> dict:
-    """Delete an entire Banner plan (writes to Banner, irreversible). ``plan`` is
-    an id or exact name. Only call after explicit user confirmation; then report
-    how many plans remain for the term."""
-    return _safe(plan_delete_payload, term, plan)
+def unw_banner_plan_delete(
+    term: str, plan: str | int, confirm: bool, confirm_name: str
+) -> dict:
+    """Delete an entire Banner plan (writes to Banner, irreversible).
+
+    Confirmation is ENFORCED twice: ``confirm`` must be true AND ``confirm_name``
+    must equal the plan's exact name. Otherwise the tool reports the intended
+    deletion and current plan state and performs no write. Successful deletion
+    returns the removed plan, remaining plan count and a before/after diff read
+    back from Banner."""
+    return _safe(plan_delete_guarded, term, plan, confirm, confirm_name)
 
 
 @mcp.tool(structured_output=False)
@@ -1911,10 +2574,22 @@ def unw_register_preview(
 ) -> dict:
     """DRY RUN ONLY: never posts add/drop/register. Returns Banner's real term
     eligibility flags and failure text for ``term``, then local checks for the
-    requested CRNs: seats/availability, time conflicts and prerequisites. Since
-    registration is currently ineligible for every term, treat the eligibility
-    failure text as the answer and do not attempt real registration."""
+    requested CRNs: seats/availability, time conflicts and prerequisites
+    (``prereq_ok`` is null when unverified). If Banner reports the term as
+    ineligible, treat its failure text as the answer; never attempt real
+    registration."""
     return _safe(registration_preview_payload, term, crns, refresh)
+
+
+@mcp.tool(structured_output=False)
+def unw_registration_window(term: str | None = None) -> dict:
+    """READ-ONLY registration time-ticket window(s). With ``term``, returns that
+    term's window; without it, returns the configured current term and the next
+    selectable term. Each row carries Banner's verbatim eligibility failure text,
+    parse_status (parsed/no_ticket/not_eligible/unknown), America/Chicago
+    start/end, seconds until opening and a countdown. It NEVER registers, adds,
+    drops or withdraws; parse_status=unknown must be reported from raw_text."""
+    return _safe(registration_window_payload, term)
 
 
 # --------------------------------------------------------------------------- #
@@ -1930,7 +2605,7 @@ def _eligibility_for(client: SSBClient, term: str, refresh: bool) -> dict[str, A
             "reg_allowed": result.reg_allowed,
             "failure": list(result.failures),
         }
-    except Exception as exc:  # noqa: BLE001 - one bad term must not hide the list
+    except Exception as exc:
         record = {
             "registration_eligible": None,
             "reg_allowed": None,

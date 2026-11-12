@@ -33,7 +33,11 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..auth import SessionExpiredError, ensure
+from ..catalog import Availability, availability_of
+from ..models import Section as SnapshotSection
+from ..schedule import find_conflicts
+
+from ..auth import MANUAL_LOGIN_COMMAND, SessionExpiredError, ensure
 from .ssb import SSBClient, SSBError
 
 JSON_HEADERS = {
@@ -64,8 +68,69 @@ class PlanAheadUnavailable(PlanError):
     """The term is authenticated but not open for planning (no plan workspace)."""
 
 
+class PlanWriteBlocked(PlanError):
+    """A hard validation blocker (prerequisite, conflict or duplicate) stopped a write."""
+
+    def __init__(self, issues: list["PlanIssue"]) -> None:
+        self.issues = issues
+        super().__init__("; ".join(issue.message for issue in issues))
+
+
+class PlanIssue(BaseModel):
+    kind: str
+    message: str
+    hard: bool = False
+
+
 class DuplicateCourseError(PlanError):
     """The course is already in the plan (Banner would silently duplicate it)."""
+
+
+def validate_sections(
+    sections: list[SnapshotSection],
+    *,
+    passed_codes: set[str] | None = None,
+    current_term: str = "202610",
+    prereqs: object | None = None,
+) -> list[PlanIssue]:
+    """Check a plan's rows for duplicate courses, seats, conflicts and prereqs."""
+    issues: list[PlanIssue] = []
+    seen: dict[str, str] = {}
+    for section in sections:
+        if section.code in seen:
+            issues.append(PlanIssue(kind="duplicate", message=f"duplicate course {section.code} (CRN {seen[section.code]} and {section.crn})", hard=True))
+        else:
+            seen[section.code] = section.crn
+        state = availability_of(section, current_term)
+        if state is Availability.CLOSED:
+            issues.append(PlanIssue(kind="availability", message=f"{section.code} CRN {section.crn} is closed (0 seats)"))
+        elif state is Availability.NOT_YET_OPEN:
+            issues.append(PlanIssue(kind="availability", message=f"{section.code} CRN {section.crn} is not yet open (0 seats); verify at registration"))
+        if section.credits_low is not None and section.credits_high is not None and section.credits_low != section.credits_high:
+            issues.append(PlanIssue(kind="variable_credits", message=f"{section.code} CRN {section.crn} is variable credit ({section.credits_low:g}-{section.credits_high:g}); set credit hours"))
+    for conflict in find_conflicts([section.to_schedule_section() for section in sections]):
+        issues.append(PlanIssue(kind="conflict", message=f"time conflict: {conflict.summary}", hard=True))
+    if passed_codes is not None:
+        provider = prereqs
+        if provider is None:
+            from ..planner import PrereqProvider as _PrereqProvider
+
+            provider = _PrereqProvider()
+        for section in sections:
+            ok, why = provider.check(section, passed_codes)
+            if ok is False:
+                issues.append(
+                    PlanIssue(kind="prereq", message=f"{section.code} CRN {section.crn}: {why}", hard=True)
+                )
+            elif ok is None:
+                issues.append(
+                    PlanIssue(
+                        kind="prereq_unverified",
+                        message=f"{section.code} CRN {section.crn}: prerequisite unverified ({why})",
+                        hard=False,
+                    )
+                )
+    return issues
 
 
 class PlanCourse(BaseModel):
@@ -176,6 +241,7 @@ class PlanClient:
     def __init__(self, ssb: SSBClient | None = None) -> None:
         self.ssb = ssb or SSBClient(ensure())
         self.client = self.ssb.client
+        self.current_term = "202610"
 
     # -------------------------------------------------------------------- reading
     def _set_plan_mode(self, term: str) -> None:
@@ -184,7 +250,7 @@ class PlanClient:
     def list_plans(self, term: str) -> list[Plan]:
         """All plans for a term (id, name, term, courses)."""
         self._set_plan_mode(term)
-        page = self.client.get("/plan/selectPlan")
+        page = self.ssb._request("GET", "/plan/selectPlan")
         if page.status_code != 200 or "html" not in page.headers.get("content-type", ""):
             raise PlanError(f"selectPlan returned HTTP {page.status_code}.")
         try:
@@ -193,7 +259,7 @@ class PlanClient:
             guest = re.search(r'<meta name="fullName" content="\s*"', page.text)
             if guest:
                 raise SessionExpiredError(
-                    "Banner returned the guest plan page — run `python scripts/login.py --force`."
+                    f"Banner returned the guest plan page — run `{MANUAL_LOGIN_COMMAND}`."
                 ) from None
             raise PlanAheadUnavailable(
                 f"Term {term} is not open for planning: Banner served the authenticated "
@@ -229,15 +295,22 @@ class PlanClient:
             "destroy": destroy or [],
             "uniqueSessionId": _unique_session_id(),
         }
-        response = self.client.post(
-            "/plan/submitPlan/batch", content=json.dumps(body), headers=JSON_HEADERS
+        response = self.ssb._request(
+            "POST",
+            "/plan/submitPlan/batch",
+            content=json.dumps(body),
+            headers=JSON_HEADERS,
+            # Plan writes are never replayed: after an expired session we cannot
+            # know whether the batch landed, so the caller must re-read and retry.
+            idempotent=False,
+            retry_on_expiry=False,
         )
         content_type = response.headers.get("content-type", "")
         if "json" not in content_type:
             raise SessionExpiredError(
                 f"submitPlan/batch returned {response.status_code} "
                 f"{content_type or 'no content-type'}; the Banner session expired. "
-                "Run `python scripts/login.py --force`."
+                f"Run `{MANUAL_LOGIN_COMMAND}`."
             )
         payload = response.json()
         if response.status_code >= 500 or payload.get("success") is False:
@@ -256,7 +329,7 @@ class PlanClient:
         # The batch write needs the plan workspace initialised in the session.
         # A bare /plan/plan opens a *draft* planHeader; /plan/plan?select=1 fails
         # (HTTP 500 on the next write) when the student has no plan to select.
-        self.client.get("/plan/plan")
+        self.ssb._request("GET", "/plan/plan")
         payload = self._batch(create=[{"headerDescription": name, "headerComment": ""}])
         header = (payload.get("data") or {}).get("planHeader") or {}
         if not header.get("id"):
@@ -280,7 +353,7 @@ class PlanClient:
         if plan.sequence_number is None:
             raise PlanSelectionError(f"Plan {plan_id} has no sequenceNumber; cannot select it.")
         self._set_plan_mode(term)
-        page = self.client.get(f"/plan/plan?select={int(plan.sequence_number)}")
+        page = self.ssb._request("GET", f"/plan/plan?select={int(plan.sequence_number)}")
         if page.status_code != 200 or "selectedPlan" not in page.text:
             raise PlanSelectionError(
                 f"Could not open plan {plan_id} (HTTP {page.status_code})."
@@ -292,6 +365,23 @@ class PlanClient:
             )
         return current
 
+    def validate(
+        self, plan_id: int, term: str, *, passed_codes: set[str] | None = None
+    ) -> list[PlanIssue]:
+        from .search import load_snapshot
+        from ..planner import PrereqProvider as _PrereqProvider
+
+        plan = self.get_plan(plan_id, term)
+        snapshot = load_snapshot(term)
+        if snapshot is None:
+            return [PlanIssue(kind="snapshot", message=f"no catalog snapshot for {term}; rows not validated")]
+        sections = [snapshot.by_crn(course.crn) for course in plan.courses]
+        present = [section for section in sections if section is not None]
+        provider = _PrereqProvider() if passed_codes is not None else None
+        return validate_sections(
+            present, passed_codes=passed_codes, current_term=self.current_term, prereqs=provider
+        )
+
     def add_course(
         self,
         plan_id: int,
@@ -301,6 +391,8 @@ class PlanClient:
         number: str | None = None,
         crn: str | None = None,
         allow_duplicate: bool = False,
+        force: bool = False,
+        passed_codes: set[str] | None = None,
     ) -> PlanCourse:
         """Add a course (subject+number) or a specific section (CRN) to a plan.
 
@@ -326,11 +418,39 @@ class PlanClient:
                         f"{plan_id}; Banner would create a duplicate row."
                     )
 
+        if not force:
+            from .search import load_snapshot
+
+            snapshot = load_snapshot(term)
+            if snapshot is not None:
+                candidate = snapshot.by_crn(wanted_crn) if wanted_crn else next(
+                    (s for s in snapshot.by_course(subject or "", str(number or "")) if s.open), None
+                )
+                if candidate is not None:
+                    existing = [snapshot.by_crn(course.crn) for course in current.courses]
+                    existing = [section for section in existing if section is not None]
+                    provider = None
+                    if passed_codes is not None:
+                        from ..planner import PrereqProvider as _PrereqProvider
+
+                        provider = _PrereqProvider()
+                    issues = validate_sections(
+                        existing + [candidate],
+                        passed_codes=passed_codes,
+                        current_term=self.current_term,
+                        prereqs=provider,
+                    )
+                    hard = [issue for issue in issues if issue.hard]
+                    if hard:
+                        raise PlanWriteBlocked(hard)
+
         if wanted_crn:
             form = {"term": term, "courseReferenceNumber": wanted_crn, "course": "section"}
         else:
             form = {"subject": subject, "courseNumber": str(number), "course": "course"}
-        response = self.client.post("/plan/addPlanItem", data=form, headers=FORM_HEADERS)
+        response = self.ssb._request(
+            "POST", "/plan/addPlanItem", data=form, headers=FORM_HEADERS
+        )
         draft = self._json_or_die(response, "/plan/addPlanItem")
         if not draft.get("success"):
             raise PlanError(f"addPlanItem rejected {form}: {draft.get('message')}")
@@ -397,8 +517,13 @@ class PlanClient:
         if plan.sequence_number is None:
             raise PlanError(f"Plan {plan_id} has no sequenceNumber; cannot delete it.")
         self._set_plan_mode(term)
-        response = self.client.post(
-            "/plan/delete", data={"delete": int(plan.sequence_number)}, headers=FORM_HEADERS
+        response = self.ssb._request(
+            "POST",
+            "/plan/delete",
+            data={"delete": int(plan.sequence_number)},
+            headers=FORM_HEADERS,
+            idempotent=False,
+            retry_on_expiry=False,
         )
         payload = self._json_or_die(response, "/plan/delete")
         if not payload.get("success"):
@@ -415,7 +540,7 @@ class PlanClient:
         if "json" not in content_type:
             raise SessionExpiredError(
                 f"{path} returned {response.status_code} {content_type or 'no content-type'}; "
-                "the Banner session expired. Run `python scripts/login.py --force`."
+                f"the Banner session expired. Run `{MANUAL_LOGIN_COMMAND}`."
             )
         return response.json()
 

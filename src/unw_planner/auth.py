@@ -17,7 +17,10 @@ Public API
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,6 +36,7 @@ from .config import (
     Settings,
     ensure_dirs,
     get_settings,
+    login_command,
 )
 
 LOGIN_HINTS = ("login.microsoftonline.com", "msftauth", "live.com", "adfs")
@@ -55,6 +59,13 @@ SSB_HEADERS: dict[str, str] = {
 }
 
 SENSITIVE_KEYS = ("password", "passwd", "otc", "code", "credential", "cookie", "secret")
+MANUAL_LOGIN_COMMAND = login_command()
+AUTO_LOGIN_ENV = "UNW_AUTO_LOGIN"
+
+_LOGIN_LOCK = threading.Lock()
+_LAST_LOGIN_AT: float | None = None
+LOGIN_COOLDOWN_SECONDS = 5.0
+logger = logging.getLogger("unw_planner.auth")
 
 
 class AuthError(RuntimeError):
@@ -76,7 +87,7 @@ def load_state() -> dict[str, Any]:
     """Return the persisted Playwright ``storage_state`` dict."""
     if not STATE_PATH.exists():
         raise SessionExpiredError(
-            f"No cached session at {STATE_PATH}. Run `python scripts/login.py` first."
+            f"No cached session at {STATE_PATH}. Run `{MANUAL_LOGIN_COMMAND}` first."
         )
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
@@ -177,6 +188,102 @@ def session_valid(settings: Settings | None = None) -> bool:
         return False
     match = re.search(r'<meta name="fullName" content="([^"]*)"', resp.text)
     return bool(match and match.group(1).strip())
+
+
+def auto_login_enabled(flag: bool | None = None) -> bool:
+    """Auto re-auth is on unless ``UNW_AUTO_LOGIN=0`` (or an explicit False)."""
+    if flag is not None:
+        return flag
+    return os.environ.get(AUTO_LOGIN_ENV, "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def looks_expired(response: httpx.Response) -> bool:
+    """True when a Banner response is the logged-out page rather than data."""
+    if response.status_code in (401, 419):
+        return True
+    if response.is_redirect:
+        location = response.headers.get("location", "")
+        if any(hint in location for hint in ("login.microsoftonline.com", "msftauth", "live.com")):
+            return True
+    content_type = response.headers.get("content-type", "")
+    if "html" not in content_type:
+        return False
+    try:
+        text = response.text
+    except Exception:  # noqa: BLE001 - streamed/closed responses carry no body
+        return False
+    if re.search(r'<meta name="fullName" content="\s*"', text):
+        return True
+    # A followed login redirect lands on an IdP page: full HTML, no Banner
+    # fullName meta at all. Small HTML fragments (section details) are exempt.
+    return len(text) > 20_000 and 'name="fullName"' not in text
+
+
+def heal_session(settings: Settings | None = None) -> None:
+    """Re-login once, serialized so concurrent callers cannot open two browsers."""
+    global _LAST_LOGIN_AT
+    cfg = settings or get_settings()
+    with _LOGIN_LOCK:
+        if session_valid(cfg):
+            return
+        now = time.monotonic()
+        if _LAST_LOGIN_AT is not None and now - _LAST_LOGIN_AT < LOGIN_COOLDOWN_SECONDS:
+            raise AuthError(
+                "A login was just attempted and the session is still invalid; "
+                f"not retrying again. Run `{MANUAL_LOGIN_COMMAND}`."
+            )
+        logger.info("session expired; starting automatic re-login")
+        try:
+            login(force=True, settings=cfg)
+        finally:
+            _LAST_LOGIN_AT = time.monotonic()
+
+
+def _refresh_cookies(client: httpx.Client) -> None:
+    client.cookies = _cookie_jar(load_state())
+
+
+def request_with_refresh(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    auto_login: bool | None = None,
+    retry_on_expiry: bool = True,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Perform one request, healing an expired session at most once.
+
+    ``retry_on_expiry=False`` is for non-idempotent writes: we never replay a
+    plan write, even after a successful re-login.
+    """
+    response = client.request(method, url, **kwargs)
+    if not looks_expired(response):
+        return response
+    if not retry_on_expiry:
+        raise SessionExpiredError(
+            f"{method} {url} hit an expired Banner session; the write was not retried. "
+            f"Run `{MANUAL_LOGIN_COMMAND}` and repeat it."
+        )
+    if not auto_login_enabled(auto_login):
+        raise SessionExpiredError(
+            f"Banner session expired. Auto-login is disabled; run `{MANUAL_LOGIN_COMMAND}`."
+        )
+    try:
+        heal_session()
+    except Exception as exc:  # noqa: BLE001 - surface the original failure plus the fix
+        raise SessionExpiredError(
+            f"Banner session expired and automatic re-login failed ({exc}). "
+            f"Run `{MANUAL_LOGIN_COMMAND}`."
+        ) from exc
+    _refresh_cookies(client)
+    retried = client.request(method, url, **kwargs)
+    if looks_expired(retried):
+        raise SessionExpiredError(
+            f"Banner session is still expired after one automatic re-login. "
+            f"Run `{MANUAL_LOGIN_COMMAND}`."
+        )
+    return retried
 
 
 def ensure(settings: Settings | None = None) -> httpx.Client:

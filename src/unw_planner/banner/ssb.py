@@ -25,13 +25,22 @@ path                             verb  purpose
 
 from __future__ import annotations
 
+import logging
+import random
 import re
-from typing import Any, Iterable, Literal
+import time as _time
+from typing import Any, Callable, Iterable, Literal
 
 import httpx
 from bs4 import BeautifulSoup
 
-from ..auth import AuthError, SessionExpiredError, ensure, httpx_client
+from ..auth import (
+    AuthError,
+    SessionExpiredError,
+    ensure,
+    httpx_client,
+    request_with_refresh,
+)
 from .models import (
     Faculty,
     LinkedSection,
@@ -44,6 +53,8 @@ from .models import (
 )
 
 SSBError = AuthError
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+logger = logging.getLogger("unw_planner.ssb")
 
 MODE = Literal["search", "registration", "plan", "preReg"]
 
@@ -88,13 +99,99 @@ def _html_to_text(html: str) -> str:
 class SSBClient:
     """Thin, typed wrapper over an authenticated httpx client."""
 
-    def __init__(self, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        *,
+        auto_login: bool | None = None,
+        max_attempts: int = 3,
+        min_interval: float = 0.25,
+        sleep: Callable[[float], None] = _time.sleep,
+        clock: Callable[[], float] = _time.monotonic,
+    ) -> None:
         self.client = client or ensure()
         self._term: str | None = None
+        self.auto_login = auto_login
+        self.max_attempts = max(1, max_attempts)
+        self.min_interval = max(0.0, min_interval)
+        self._sleep = sleep
+        self._clock = clock
+        self._last_request: float | None = None
+
+    # ------------------------------------------------------------------ plumbing
+    def _throttle(self) -> None:
+        if self._last_request is None or self.min_interval <= 0:
+            self._last_request = self._clock()
+            return
+        wait = self.min_interval - (self._clock() - self._last_request)
+        if wait > 0:
+            self._sleep(wait)
+        self._last_request = self._clock()
+
+    def _retry_delay(self, attempt: int, response: httpx.Response | None = None) -> float:
+        if response is not None:
+            header = response.headers.get("retry-after")
+            if header:
+                try:
+                    return max(0.0, float(header))
+                except ValueError:
+                    pass
+        base = min(4.0, 0.5 * (2 ** (attempt - 1)))
+        return base + random.uniform(0, base * 0.25)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        idempotent: bool = True,
+        retry_on_expiry: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """One Banner call with bounded retries.
+
+        Non-idempotent calls (plan writes) are never replayed: an expired session
+        raises immediately, and transient 5xx/429 responses are returned to the
+        caller instead of being retried.
+        """
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            self._throttle()
+            try:
+                response = request_with_refresh(
+                    self.client,
+                    method,
+                    path,
+                    auto_login=self.auto_login,
+                    retry_on_expiry=retry_on_expiry and idempotent,
+                    **kwargs,
+                )
+            except httpx.TransportError as exc:
+                last_error = exc
+                if not idempotent or attempt >= self.max_attempts:
+                    raise SSBError(f"{method} {path} failed: {exc}") from exc
+                delay = self._retry_delay(attempt)
+                logger.info(
+                    "banner retry method=%s path=%s attempt=%d error=%s delay=%.2fs",
+                    method, path, attempt, exc.__class__.__name__, delay,
+                )
+                self._sleep(delay)
+                continue
+            if response.status_code in RETRY_STATUSES and idempotent and attempt < self.max_attempts:
+                delay = self._retry_delay(attempt, response)
+                logger.info(
+                    "banner retry method=%s path=%s attempt=%d status=%d delay=%.2fs",
+                    method, path, attempt, response.status_code, delay,
+                )
+                self._sleep(delay)
+                continue
+            return response
+        raise SSBError(f"{method} {path} failed after {self.max_attempts} attempts: {last_error}")
 
     # ------------------------------------------------------------------ plumbing
     def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        response = self.client.get(
+        response = self._request(
+            "GET",
             path,
             params=params,
             headers={"Accept": "application/json, text/javascript, */*; q=0.01"},
@@ -115,7 +212,7 @@ class SSBClient:
         return response.json()
 
     def _get_html(self, path: str, params: dict[str, Any]) -> str:
-        response = self.client.get(path, params=params)
+        response = self._request("GET", path, params=params)
         if response.status_code >= 400 or "html" not in response.headers.get("content-type", ""):
             raise SSBError(
                 f"{path} failed with HTTP {response.status_code}: {response.text[:300]}"
@@ -140,7 +237,8 @@ class SSBClient:
 
     def set_term(self, term: str, mode: MODE = "search") -> TermEligibility:
         """Bind the term to the session (the usual ``POST /ssb/term/search``)."""
-        response = self.client.post(
+        response = self._request(
+            "POST",
             f"/term/search?mode={mode}",
             data={
                 "term": term,

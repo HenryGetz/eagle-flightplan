@@ -2,21 +2,50 @@
 
 `unw_planner.mcp_server` exposes the degree audit, Banner 9 class search, the
 planning engine and the term-scoped Plan Ahead worksheets over MCP **stdio**.
-It is the same code path as the `unwplanner` CLI: every read command prints the
-payload the matching tool returns.
+The `unwplanner` CLI and the MCP server share the same domain layer (`auth`,
+`banner`, `audit`, `catalog`, `planner`, `report`); the MCP surface is the
+broader read-only API.
 
 | item | value |
 | --- | --- |
 | module | `<repo>/src/unw_planner/mcp_server.py` |
 | stdio entry point | `<repo>/.venv/bin/python -m unw_planner.mcp_server` |
 | console script | `<repo>/.venv/bin/unw-mcp` |
-| registration key | `unw-planner` in `~/.omp/agent/mcp.json` |
+| registration key | `unw-planner` in `~/.omp/agent/mcp.json` (also Claude Desktop / Cursor) |
 | transport | stdio only |
-| instructions | advertised in the MCP `initialize` result (55 lines) |
+| instructions | advertised in the MCP `initialize` result (60 lines) |
 
 The server never writes to Banner registration. The only writes are Plan Ahead
 worksheet operations (`*_plan_create/add/remove/delete`), which are explicitly
 named and documented as writes.
+
+---
+
+## Client configuration
+
+`unwplanner setup --register-mcp` merges the entry below into omp
+(`~/.omp/agent/mcp.json`), Claude Desktop (`claude_desktop_config.json`) and
+Cursor (`~/.cursor/mcp.json`) when they are present. It preserves other
+servers, backs up before writing, and is idempotent. Use the absolute path for
+your checkout/install (`...\\.venv\\Scripts\\unw-mcp.exe` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "unw-planner": {
+      "command": "/ABSOLUTE/PATH/TO/unw-planner/.venv/bin/unw-mcp",
+      "args": [],
+      "env": {"PYTHONUNBUFFERED": "1"}
+    }
+  }
+}
+```
+
+The same block works for omp, Claude Desktop and Cursor. Restart the client
+after adding or upgrading the server. A stale client process keeps the old code
+and the old cache in memory; in particular, `.state/ratings.json` is now flat
+(all `RatingInfo` fields plus `fetched_at`) but old processes may still read it
+until they restart.
 
 ---
 
@@ -28,25 +57,33 @@ actionable `"hint"` instead of raising.
 
 | tool | arguments | returns / purpose |
 | --- | --- | --- |
-| `unw_session` | — | `authenticated`, state-file age, cookie count, earliest non-session cookie expiry (never cookie values), and the exact repair command. Call first. |
+| `unw_session` | — | `authenticated` (live check), `degraded` (state exists but live check failed), state-file age, cookie count, earliest non-session cookie expiry (never cookie values), `read_hint`/`write_hint`, and the exact repair command. Call first. |
 | `unw_profile` | — | Name, id, classification, degree/school, catalog year(s), majors, minors, programs, college, advisors, credits earned/in progress, GPA, percent complete, anticipated graduation, academic standing. `holds` is `null` because no mapped endpoint exposes it. |
 | `unw_audit` | `group?` | Requirement tree: groups → blocks → options with applied/in-progress/transfer flags. `group` filters by a case-insensitive substring of group title/kind or block label. |
-| `unw_remaining` | — | Only unmet requirements: id, title, parent group, kind, status, priority, credits remaining, pick-N progress, options (courses/`ATTRIBUTE X`/`SUBJ *`). |
+| `unw_remaining` | — | Only unmet requirements: id, title, parent group, kind, status, priority, credits remaining, pick-N progress, options (courses/`ATTRIBUTE X`/`SUBJ *`), and `shared_title_with` (other requirement ids with the same title/options: double-counting risk). |
 | `unw_terms` | `refresh?=false` | Term codes/descriptions plus `is_next`, `is_current`, `view_only`, `registration_eligible` and Banner's eligibility failure text. |
-| `unw_search` | `term`; `subject?`, `number?`, `keyword?`, `attribute?`, `instructor?`, `open_only?`, `limit?=50`, `offset?=0`, `refresh?=false` | Normalised sections from the term snapshot. Filtering is client-side because Banner ignores those query params. |
+| `unw_search` | `term`; `subject?`, `number?`, `keyword?`, `attribute?`, `instructor?`, `open_only?`, `limit?=50`, `offset?=0`, `refresh?=false` | Normalised sections from the term snapshot. Filtering is client-side because Banner ignores those query params. `limit` is capped at 200; `limit_capped` and `next_offset` drive paging. |
 | `unw_course` | `term`, `crn`, `refresh?=false` | Full section detail: meetings, faculty + RMP each, attributes, description, prereq/coreq/restriction text and parsed prereq codes, linked CRNs, enrollment text, availability. |
-| `unw_candidates` | `term`; `requirement?`, `refresh?=false` | Resolves each unmet requirement (or one id/title substring) to offered sections, with the explicit reason when empty. |
-| `unw_ratings` | `names` (list or comma string) | Batch RMP lookup. Accepts `"Last, First"` or `"First Last"`. Unrated → `rating: null`, never `0.0`; `weak_evidence` flags n<3. |
-| `unw_conflicts` | `term`, `crns`, `refresh?=false` | Pairwise conflicts, ASCII week grid, total credits, unscheduled (TBA) sections, missing CRNs. |
-| `unw_plan_draft` | `term`; `max_credits?=16`, `profile?="max_rated"`, `avoid_days?`, `earliest?`, `latest?`, `include_summer?=false`, `refresh?=false` | Conflict-free draft: picks with rationale, credits, average RMP, grid, verification problems, unplaced requirements + reasons. `include_summer` also drafts the following summer for requirements that did not fit. |
+| `unw_candidates` | `term`; `requirement?`, `open_only?=true`, `compact?=false`, `limit?=0` (0=all), `refresh?=false` | Resolves each unmet requirement (or one id/title substring) to offered sections, with the explicit reason when empty. `compact` omits duplicated section detail; `limit` caps candidates per requirement and reports `returned`/`truncated`. One requirement can be large. |
+| `unw_ratings` | `names` (list, or one string), `refresh?=false` | Batch RMP lookup. Each name may be `"Last, First"` or `"First Last"`; a comma inside a single name is preserved. Unrated → `rating: null`, never `0.0`; `weak_evidence` flags n<3. Cache entries expire after 7 days; transient RMP failures are never cached. |
+| `unw_conflicts` | `term`, `crns`, `refresh?=false` | Pairwise conflicts, ASCII week grid plus `grid_legend` (label → CRN list), total credits, unscheduled (TBA) sections, missing CRNs. |
+| `unw_plan_draft` | `term`; `max_credits?=16`, `min_credits?=0`, `profile?="max_rated"`, `avoid_days?`, `earliest?`, `latest?`, `avoid_instructors?`, `exclude_arrangement?=false`, `required_crns?`, `required_courses?`, `exclude_crns?`, `exclude_courses?`, `hours?`, `include_summer?=false`, `refresh?=false` | Conflict-free draft: picks with rationale, credits, average RMP, grid plus `grid_legend`, verification problems, unplaced requirements + reasons. `required_crns`/`required_courses` are placed first and hard-fail (`ok: false` + `pin_errors`) when unavailable/conflicting/prereq-blocked/excluded/over budget; `min_credits` tops up from elective pools (`min_credits_met`); `hours` sets the credit hours reserved per CRN; `unw_roadmap` does not accept pins. `include_summer` also drafts the following summer for requirements that did not fit. |
 | `unw_roadmap` | `start_term`; `terms?`, `include_summer?=false`, `max_credits?=16`, `refresh?=false` | Multi-term plan (default: the start term + next three non-summer terms), carried-forward requirements/prereqs, `final_remaining` and graduation-risk notes against the audit's `GRADTERMUG`. |
 | `unw_offering_matrix` | `courses?` (list or comma string), `refresh?=false` | Offering pattern per `CYS 4245` / `ATTRIBUTE NATS` / `DAL *`: `every-term`, `fall-only`, `spring-only`, `summer-only`, `fall+summer`, `spring+summer`, `unknown`, with section counts/open counts/instructors per term. Omit `courses` for all unmet targets. |
 | `unw_banner_plans` | `term` | Plans for **one term**. TERM-SCOPED: an empty list means no plans for THIS term. `plan_ahead_available: false` means Banner does not offer Plan Ahead for that term at all (e.g. 202710). |
-| `unw_banner_plan_create` | `term`, `name` | **Writes.** Creates a named worksheet (max 5/term). Verify availability and user confirmation first. |
-| `unw_banner_plan_add` | `term`, `plan`, `crn?` or `subject`+`number` | **Writes.** Adds a section or a course to a plan. `plan` = id or exact name; ambiguous/missing names are rejected with the available candidates. |
-| `unw_banner_plan_remove` | `term`, `plan`, `crn?` or `subject`+`number` | **Writes.** Removes one plan row and returns the updated plan. |
-| `unw_banner_plan_delete` | `term`, `plan` | **Writes, irreversible.** Deletes a plan (Banner wants its per-term sequence number internally). |
-| `unw_register_preview` | `term`, `crns`, `refresh?=false` | **DRY RUN ONLY.** Banner's real eligibility flags/failure text plus local seat, conflict and prerequisite checks. Never POSTs add/drop/register. |
+| `unw_banner_plan_create` | `term`, `name`, `confirm` | **Writes.** Creates a named worksheet (max 5/term). `confirm` is required and enforced; without `true` it returns the intended effect and current plan count. |
+| `unw_banner_plan_add` | `term`, `plan`, `confirm`, `crn?` or `subject`+`number` | **Writes.** Adds a section or course. `confirm` is required and enforced; refusal names the exact section and current plan state. `plan` = id or exact name; ambiguous/missing/duplicate rows are rejected without writing. |
+| `unw_banner_plan_remove` | `term`, `plan`, `confirm`, `crn?` or `subject`+`number` | **Writes.** Removes one row. `confirm` is required and enforced; refusal names the row and projected credits. |
+| `unw_banner_plan_delete` | `term`, `plan`, `confirm`, `confirm_name` | **Writes, irreversible.** `confirm` must be true and `confirm_name` must equal the exact plan name. Refusal reports the full intended deletion and current rows/credits. |
+| `unw_register_preview` | `term`, `crns`, `refresh?=false` | **DRY RUN ONLY.** Banner's real eligibility flags/failure text plus local seat, conflict and prerequisite checks. `prereq_ok` is `true` (verified), `false` (blocked) or `null` (unknown; see `reason`). Never POSTs add/drop/register. |
+| `unw_registration_window` | `term?` | **READ-ONLY.** Registration time-ticket window(s) parsed from Banner's eligibility prose into America/Chicago datetimes, with `parse_status`, verbatim `raw_text`, seconds until opening and a countdown. No `term` returns the configured current term and the next selectable term. Never registers/adds/drops/withdraws. |
+
+Section payloads include `credits_semantics` (`credits` is the display high
+end, `planning_credits` is what the planner reserves, `credit_range` is the raw
+range) and `part_of_term_note` (Banner-native code; `1` is full term, other
+codes are session-specific and labels are not mapped). `unw_conflicts` and
+`unw_plan_draft` also return `grid_legend`, mapping each grid label (including
+overlap slugs such as `CYS 4245/BIB 4360`) to its CRN(s).
 
 Cached data reports provenance in `catalog`: `source` (`network`/`cache`),
 `age_seconds`, `age_human`, `sections`, `request_count`. `refresh: true` forces
@@ -65,10 +102,13 @@ the numbers below as shape examples, not fixtures. Absolute paths are shown as `
 
 ```json
 {"authenticated": true,
+ "degraded": false,
  "state_age_human": "2.5 h",
  "cookie_count": 24,
  "earliest_cookie_expiry": "2026-11-21T18:37:55.974701+00:00",
- "fix_command": "cd <repo> && <repo>/.venv/bin/python scripts/login.py --force"}
+ "read_hint": "try unw_profile/unw_terms once; read-only tools may still work",
+ "write_hint": "run fix_command before any Banner plan write",
+ "fix_command": "<venv python> -m unw_planner.cli login --force"}
 ```
 
 ### `unw_profile`
@@ -80,7 +120,7 @@ the numbers below as shape examples, not fixtures. Absolute paths are shown as `
  "majors": ["Cybersecurity", "Computer Science"],
  "minors": ["Ministry", "Bible"],
  "programs": ["Computer Science-BS", "Cybersecurity-BS"],
- "advisors": [{"name": "Zderad, Jonathan A", "email": "jazderad@unwsp.edu", "source": "goalArray"},
+ "advisors": [{"name": "Zderad, Jonathan A", "email": "advisor@example.edu", "source": "goalArray"},
               {"name": "Megan Brown", "email": null, "source": "reportArray"}],
  "credits_earned": 86.0, "credits_in_progress": 15.0, "gpa": 4.0,
  "percent_complete": 71, "anticipated_graduation": "Spring 2028",
@@ -162,7 +202,7 @@ the numbers below as shape examples, not fixtures. Absolute paths are shown as `
    "restrictions": ["Must be enrolled in one of the following Levels:", "Undergraduate (UG)", …],
    "linked_sections": [],
    "enrollment_text": "Enrollment Actual:\n0\nEnrollment Maximum:\n30\nEnrollment Seats Available:\n30 …",
-   "faculty": [{"name": "Smith, James", "email": "jlsmith2@unwsp.edu", "primary": true,
+   "faculty": [{"name": "Smith, James", "email": "professor@example.edu", "primary": true,
                 "rmp": {"matched_name": "James Smith", "rated": true, "rating": 3.7,
                         "difficulty": 2.9, "num_ratings": 14, "confidence": 0.99}}]}}
 ```
@@ -290,43 +330,66 @@ Ahead for that term.
  "note": "This endpoint NEVER posts add/drop/register …"}
 ```
 
-### Plan writes
+### Plan writes and enforced confirmation
 
-These tools were **not executed successfully** during integration: the
-student's plans are load-bearing. The real responses below are the safe
-rejection paths; the success shape is the `Plan` model returned by
-`banner/plan.py`.
+All four write tools require `confirm: true` (the parameter is required, not
+optional) and `unw_banner_plan_delete` additionally requires
+`confirm_name` equal to the plan's exact name. Without them the server returns
+`refused: true`, `writes_performed: []`, the exact intended effect and the
+current plan state, and contacts Banner only to read.
 
-`unw_banner_plan_add(term="202620", plan="No Such Plan", crn="22201")`:
-
-```json
-{"ok": false,
- "error": "PlanNotFoundError: No plan named 'No Such Plan' in this term. Available: 59003 'Plan A - Max Rated 16cr'; 59005 'Plan B - Major Forward 18cr'; 59013 'Plan C - Light 12cr'; 59021 'Advisor Plan - Spring 2027'",
- "error_type": "PlanNotFoundError",
- "hint": "Banner rejected the plan operation. Re-read the plan list before retrying; never repeat a write after an HTTP 500 without checking unw_session."}
-```
-
-`unw_banner_plan_create(term="202710", name="…")`:
+Real refusal example — `unw_banner_plan_add(term="202620", plan="59021",
+confirm=false, crn="22445")`:
 
 ```json
-{"ok": false,
- "error": "PlanError: Banner rendered no Plan Ahead list for 202710; the term is not selectable in Plan Ahead (the session itself is alive). No plans can be read or written for this term.",
- "error_type": "PlanError",
- "hint": "Banner rejected the plan operation. Re-read the plan list before retrying; …"}
+{"ok": false, "refused": true, "confirmation_required": true,
+ "writes_performed": [],
+ "intended_effect": "would add CYS 2081 CRN 22445 (Data Communications, 4 cr) to plan 59021 'Advisor Plan - Spring 2027' (currently 5 rows, 15 credits)",
+ "current_state": {"plan_id": 59021, "plan_name": "Advisor Plan - Spring 2027",
+                   "term": "202620", "sequence_number": 5,
+                   "course_count": 5, "total_credits": 15.0},
+ "required_confirmation": {"confirm": true},
+ "error": "Confirmation required: would add CYS 2081 CRN 22445 … No write was performed.",
+ "hint": "Show the intended effect to the user and get explicit approval before re-calling with the required confirmation."}
 ```
 
-Success shapes (from the frozen `PlanClient` models):
+Real create refusal on a term with room — `unw_banner_plan_create(term="202630",
+name="Plan D - Draft", confirm=false)`:
 
 ```json
-// create
-{"ok": true, "term": "202620", "created": {<plan>}, "note": "The new plan is term-scoped; read it back with unw_banner_plans(term)."}
-// add
-{"ok": true, "term": "202620", "plan": {<plan>}, "added": {"id": 206722, "code": "CYS 2081", "crn": "22445", "credits": 4.0, "status": "Planned", …}}
-// remove
-{"ok": true, "term": "202620", "plan": {<plan>}}
-// delete
-{"ok": true, "term": "202620", "deleted": {"id": 59003, "name": "Plan A - Max Rated 16cr"}, "remaining_plans": 3}
+{"ok": false, "refused": true, "confirmation_required": true,
+ "writes_performed": [],
+ "intended_effect": "would create a Plan Ahead worksheet 'Plan D - Draft' for term 202630 (current plans: 0/5)",
+ "current_state": {"term": "202630", "plan_count": 0, "plan_limit": 5, "plans": []},
+ "required_confirmation": {"confirm": true}}
 ```
+
+Delete with a wrong name (real shape):
+
+```json
+{"ok": false, "refused": true, "writes_performed": [],
+ "required_confirmation": {"confirm": true, "confirm_name": "Advisor Plan - Spring 2027"},
+ "error": "Confirmation required: would DELETE plan 59021 'Advisor Plan - Spring 2027' … confirm_name 'Wrong Name' does not match the exact plan name …"}
+```
+
+Successful writes return a before/after diff **read back from Banner**, not
+assumed. Tested shape for an add (mocked transport):
+
+```json
+{"ok": true, "term": "202620", "writes_performed": ["add_course"],
+ "added": {"id": 206700, "code": "CYS 4855", "crn": "22449", "credits": 2.0, "status": "Planned"},
+ "plan": {<plan with 2 rows>},
+ "diff": {"action": "add_course", "plan_id": 59021, "plan_name": "Advisor Plan - Spring 2027",
+          "rows_added": [{"crn": "22449", "code": "CYS 4855", …}],
+          "rows_removed": [],
+          "course_count_before": 1, "course_count_after": 2,
+          "credits_before": 4.0, "credits_after": 6.0, "credits_delta": 2.0}}
+```
+
+Create/delete diffs also include `plan_count_before` / `plan_count_after`;
+delete reports `remaining_plans` and every removed row. If Banner accepts the
+write but the read-back fails, the tool returns `ok: false` with
+`writes_performed` naming the action and a "do not repeat" hint.
 
 ---
 
@@ -340,7 +403,7 @@ the SDK as an `isError` tool result instead.
 | case | real behaviour | what to do |
 | --- | --- | --- |
 | expired session | `SessionExpiredError` (Banner returned HTML/guest page) | run `fix_command` from `unw_session`; never retry a write blindly |
-| missing/expired credentials | `AuthError` | `unwplanner doctor`, then `scripts/login.py --force` |
+| missing/expired credentials | `AuthError` | run `fix_command` from `unw_session`; confirm `.env` has all three values |
 | plan name ambiguous | `PlanError` listing each `id name` candidate | use the id or an unambiguous exact name |
 | plan name/id missing | `PlanNotFoundError` listing available plans | call `unw_banner_plans(term)`; do not guess |
 | Plan Ahead unavailable for term | `PlanError` "term is not selectable in Plan Ahead" | pick 202610/202620/202630, or another term with a plan list |
@@ -356,8 +419,11 @@ the SDK as an `isError` tool result instead.
 This mirrors the server `instructions`; the full text is advertised on
 `initialize`.
 
-1. **Start with `unw_session`.** If `authenticated` is false, tell the user to
-   run its `fix_command`. Never ask for a password, TOTP code or cookie.
+1. **Start with `unw_session`.** If `authenticated` is false but `degraded` is
+   true, try one read tool (`unw_profile`/`unw_terms`) before asking for a login;
+   read-only tools may still work. Only stop on `AuthError`/`SessionExpiredError`
+   or before a Banner plan write, then use `fix_command`. Never ask for a
+   password, TOTP code or cookie.
 2. **Then `unw_profile` and `unw_remaining`.** The audit already knows majors,
    minors, catalog years, advisors and credits — do not ask the student.
    **Do** confirm their declared program: students often say "ministry minor"
@@ -371,8 +437,11 @@ This mirrors the server `instructions`; the full text is advertised on
 5. **Never propose a time conflict.** Run `unw_conflicts` on the final CRN set
    and show the ASCII grid.
 6. **Never write to Banner plans without explicit user confirmation**, and
-   **never attempt real registration**. `unw_register_preview` is a dry run; the
-   eligibility failure text is the answer.
+   **never attempt real registration**. Write tools enforce `confirm=true`
+   (delete also requires the exact `confirm_name`); a refusal is a safe stop, not
+   a prompt to retry automatically. Report the returned diff after a confirmed
+   write. `unw_register_preview` is a dry run and `unw_registration_window` is
+   read-only; Banner's eligibility failure text is the answer.
 7. **Unrated is unknown, not bad** (`null ≠ 0.0`); n<3 is weak evidence. State
    match confidence as name-matching confidence.
 8. **Always show the grid and a per-pick rationale.** Flag `NOT_YET_OPEN` /
@@ -395,15 +464,17 @@ hour even while polling.
    `fix_command`:
 
    ```bash
-   cd <repo> && <repo>/.venv/bin/python scripts/login.py --force
+   <venv python> -m unw_planner.cli login --force
    ```
 
-   `scripts/login.py` drives Entra ID username → password → TOTP from `.env`
-   automatically (no human needed) and rewrites the state file.
+   The packaged CLI drives Entra ID username → password → TOTP from `.env`
+   (no human needed) and rewrites the state file. The module command works in
+   editable and wheel installs.
 2. Re-call `unw_session`; it should report `authenticated: true`.
-3. If login still fails, run `unwplanner doctor`. It checks `.env` (mode 600 and
-   all three credentials), state age, live session validity, Chromium presence,
-   the term-snapshot cache and RMP reachability, each with a one-line fix.
+3. If login still fails, check the pieces directly: `.env` exists with mode 600
+   and all three credentials, `.state/unw_state.json` is fresh, Chromium is
+   installed (`playwright install chromium`), and `unw_session` reports a live
+   session. `ruff check .` and `pytest -q` verify the local install.
 4. **Do not run a browser against the same `JSESSIONID` while an httpx call is
    in flight** — observed to invalidate both sides (`docs/login.md`). The httpx
    replay path is the primary one.
@@ -418,15 +489,14 @@ Never print `.env` values, cookie values, TOTP secrets or state-file contents.
 
 ```bash
 cd <repo>
-uv run --project . unwplanner doctor
-uv run --project . unwplanner remaining
-uv run --project . unwplanner search --term 202620 --subject CYS --json
+.venv/bin/unwplanner advise --term 202620
+.venv/bin/unwplanner search --term 202620 --subject CYS
 .venv/bin/python scripts/smoke_mcp.py
 .venv/bin/python -m pytest -q
-.venv/bin/ruff check --select F,E9 src/unw_planner/mcp_server.py src/unw_planner/cli.py
+.venv/bin/ruff check .
 ```
 
-`scripts/smoke_mcp.py` launches the server over real stdio, asserts the 19-tool
+`scripts/smoke_mcp.py` launches the server over real stdio, asserts the 20-tool
 surface and every non-empty description, then calls `unw_session`,
 `unw_profile`, `unw_terms`, `unw_search(202620, CYS)`,
 `unw_ratings(["Zderad, Jonathan"])` and `unw_banner_plans("202620")`. It exits

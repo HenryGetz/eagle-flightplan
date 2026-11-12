@@ -108,7 +108,7 @@ def client() -> tuple[PlanClient, Recorder]:
     recorder = Recorder()
     transport = httpx.MockTransport(recorder.handler)
     http = httpx.Client(transport=transport, base_url=BASE)
-    return PlanClient(SSBClient(http)), recorder
+    return PlanClient(SSBClient(http, min_interval=0)), recorder
 
 
 def test_bootstrap_extraction_reads_real_plans():
@@ -224,7 +224,7 @@ def test_non_planable_term_raises_plan_ahead_unavailable():
         return httpx.Response(404)
 
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE)
-    plans = PlanClient(SSBClient(http))
+    plans = PlanClient(SSBClient(http, min_interval=0))
     with pytest.raises(PlanAheadUnavailable):
         plans.list_plans("202710")
 
@@ -239,6 +239,84 @@ def test_guest_page_still_raises_session_expired():
         return httpx.Response(200, text=html, headers={"content-type": "text/html;charset=UTF-8"})
 
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE)
-    plans = PlanClient(SSBClient(http))
+    plans = PlanClient(SSBClient(http, min_interval=0))
     with pytest.raises(SessionExpiredError):
         plans.list_plans("202620")
+
+
+def test_validate_sections_flags_hard_and_soft_issues():
+    from unw_planner.banner.plan import validate_sections
+    from unw_planner.models import Section
+
+    def sec(crn, code, day, start, end, *, seats=20, open_=True, credits=4.0):
+        from unw_planner.models import Instructor
+        from unw_planner.schedule import Meeting
+
+        subject, number = code.split()
+        return Section(
+            crn=crn, term="202620", subject=subject, number=number, section="01",
+            subject_course=f"{subject}{number}", title=code, credits_low=credits,
+            capacity=seats, enrollment=0, seats_available=seats, open=open_,
+            faculty=[Instructor(name="Smith, James")],
+            meetings=[Meeting(day=day, start=start, end=end)],
+        )
+
+    sections = [
+        sec("1", "CYS 4245", "Mon", "10:00", "11:00"),
+        sec("2", "CYS 4245", "Tue", "10:00", "11:00"),  # duplicate course
+        sec("3", "CYS 4466", "Mon", "10:30", "11:30"),  # conflict with 1
+        sec("4", "CYS 3185", "Wed", "10:00", "11:00", seats=0, open_=False),
+    ]
+    issues = validate_sections(sections, current_term="202610")
+    kinds = {issue.kind for issue in issues}
+    assert "duplicate" in kinds and "conflict" in kinds and "availability" in kinds
+    assert any(issue.hard for issue in issues if issue.kind == "conflict")
+
+
+def test_add_course_refuses_hard_blocker_without_http(monkeypatch):
+    from unw_planner.banner.plan import Plan, PlanCourse, PlanWriteBlocked
+    from unw_planner.models import Instructor, Section
+    from unw_planner.schedule import Meeting
+
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(500)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE)
+    client = PlanClient(SSBClient(http, min_interval=0))
+
+    existing_section = Section(
+        crn="1", term="202620", subject="CYS", number="4245", section="01",
+        subject_course="CYS4245", title="A", credits_low=4.0, capacity=20,
+        seats_available=20, open=True, faculty=[Instructor(name="Smith, James")],
+        meetings=[Meeting(day="Mon", start="10:00", end="11:00")],
+    )
+    candidate = Section(
+        crn="2", term="202620", subject="CYS", number="4466", section="01",
+        subject_course="CYS4466", title="B", credits_low=2.0, capacity=20,
+        seats_available=20, open=True, faculty=[Instructor(name="Smith, James")],
+        meetings=[Meeting(day="Mon", start="10:30", end="11:30")],
+    )
+    plan = Plan(
+        id=999, name="Test", term="202620",
+        courses=[PlanCourse(id=1, subject="CYS", number="4245", crn="1", credits=4.0)],
+    )
+    monkeypatch.setattr(client, "select_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr("unw_planner.banner.search.load_snapshot", lambda term: _snapshot(existing_section, candidate))
+
+    with pytest.raises(PlanWriteBlocked):
+        client.add_course(999, "202620", crn="2")
+    assert calls["n"] == 0
+
+
+def _snapshot(*sections):
+    from datetime import datetime, timezone
+
+    from unw_planner.banner.search import SnapshotMeta, TermSnapshot
+
+    return TermSnapshot(
+        meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),
+        sections=list(sections),
+    )

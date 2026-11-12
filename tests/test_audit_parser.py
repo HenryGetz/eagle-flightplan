@@ -1,4 +1,5 @@
 import json
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -104,3 +105,95 @@ def test_attribute_wildcard_options_are_documented():
 def test_rejects_non_audit_payload():
     with pytest.raises(AuditParseError):
         parse_audit({"foo": "bar"})
+
+
+def _single_course_audit(grade: str) -> dict:
+    return {
+        "auditHeader": {"studentName": "Test Student"},
+        "degreeInformation": {},
+        "classInformation": {"classArray": []},
+        "blockArray": [
+            {
+                "requirementId": "RA1",
+                "title": "Major",
+                "requirementType": "MAJOR",
+                "percentComplete": "0",
+                "ruleArray": [
+                    {
+                        "ruleId": "1",
+                        "label": "Course X",
+                        "percentComplete": "0",
+                        "requirement": {
+                            "classesBegin": "1",
+                            "courseArray": [{"discipline": "CYS", "number": "3065"}],
+                        },
+                        "classesAppliedToRule": {
+                            "classArray": [
+                                {
+                                    "discipline": "CYS",
+                                    "number": "3065",
+                                    "letterGrade": grade,
+                                    "credits": 4,
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("grade", "status"),
+    [
+        ("F", "failed"),
+        ("WF", "failed"),
+        ("NC", "failed"),
+        ("W", "withdrawn"),
+        ("I", "incomplete"),
+        ("AU", "audit"),
+    ],
+)
+def test_non_credit_grades_never_earn_credit(grade, status):
+    from unw_planner.catalog import applied_codes, requirements_from_audit
+
+    audit = parse_audit(_single_course_audit(grade))
+    option = audit.groups[0].blocks[0].options[0]
+    assert option.status == status
+    assert option.in_progress is False
+    assert applied_codes(audit) == set()
+    requirement = requirements_from_audit(audit)[0]
+    assert requirement.applied_count == 0
+    assert requirement.applied_credits == 0.0
+    assert requirement.satisfied is False
+
+
+def test_failed_course_can_be_retaken():
+    from datetime import datetime
+
+    from unw_planner.banner.search import SnapshotMeta, TermSnapshot
+    from unw_planner.catalog import applied_codes, requirements_from_audit, resolve
+    from unw_planner.models import Instructor, Section
+
+    audit = parse_audit(_single_course_audit("F"))
+    requirement = requirements_from_audit(audit)[0]
+    snapshot = TermSnapshot(
+        meta=SnapshotMeta(term="202620", fetched_at=datetime.now(UTC)),
+        sections=[
+            Section(
+                crn="9001",
+                term="202620",
+                subject="CYS",
+                number="3065",
+                section="01",
+                title="Course X",
+                credits_low=4.0,
+                seats_available=10,
+                open=True,
+                faculty=[Instructor(name="Smith, James")],
+            )
+        ],
+    )
+    resolution = resolve(requirement, snapshot, exclude_codes=applied_codes(audit))
+    assert [section.crn for section in resolution.candidates] == ["9001"]

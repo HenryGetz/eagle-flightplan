@@ -210,3 +210,29 @@ def test_constraints_are_carried_into_each_term(tmp_path):
     roadmap = planner.roadmap(["202620", "202710"], Constraints(avoid_days=[Weekday.SAT]))
     assert roadmap.terms[0].draft.selections == []
     assert [s.crn for s in roadmap.terms[1].draft.selections] == ["2"]
+
+
+def test_wildcard_pool_is_not_replanned_every_term(tmp_path):
+    audit = audit_with([
+        RequirementBlock(
+            label="DAL *",
+            pick_n_of=1,
+            status="not_met",
+            options=[CourseRef(subject="DAL", number="", status="option")],
+        )
+    ])
+    snapshots = {
+        "202620": snapshot("202620", [section("1", "DAL", "1010", "202620")]),
+        "202710": snapshot("202710", [section("2", "DAL", "1010", "202710")]),
+    }
+    planner = Planner(
+        audit,
+        snapshots,
+        ratings=ratings(tmp_path),
+        prereqs=prereqs(tmp_path),
+        terms_order=["202620", "202710"],
+    )
+    roadmap = planner.roadmap(["202620", "202710"])
+    assert [s.course for s in roadmap.terms[0].draft.selections] == ["DAL 1010"]
+    assert roadmap.terms[1].draft.selections == []
+    assert roadmap.final_remaining == []

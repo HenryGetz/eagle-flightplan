@@ -55,7 +55,7 @@ class Recorder:
 def client():
     recorder = Recorder()
     http = httpx.Client(transport=httpx.MockTransport(recorder.handler), base_url=BASE)
-    return SSBClient(http), recorder
+    return SSBClient(http, min_interval=0), recorder
 
 
 def test_get_terms(client):
@@ -78,7 +78,7 @@ def test_next_term_skips_view_only():
         ),
         base_url=BASE,
     )
-    assert SSBClient(http).next_term().code == "202630"
+    assert SSBClient(http, min_interval=0).next_term().code == "202630"
 
 
 def test_search_requires_term(client):

@@ -46,6 +46,7 @@ EXPECTED = {
     "unw_profile",
     "unw_ratings",
     "unw_register_preview",
+    "unw_registration_window",
     "unw_remaining",
     "unw_roadmap",
     "unw_search",
@@ -94,7 +95,7 @@ async def run() -> int:
         print(f"tools ({len(tools)}):")
         for tool in sorted(tools, key=lambda item: item.name):
             print(f"  {tool.name}: {(tool.description or '').splitlines()[0]}")
-        if len(tools) != 19 or names != EXPECTED:
+        if len(tools) != 20 or names != EXPECTED:
             failures.append(f"tool surface mismatch: {sorted(EXPECTED ^ names)}")
         for tool in tools:
             if not (tool.description or "").strip():
@@ -143,7 +144,7 @@ async def run() -> int:
         for failure in failures:
             print(f"FAIL: {failure}")
         return 1
-    print("PASS: server listed 19 tools and all six calls returned real data")
+    print("PASS: server listed 20 tools and all six calls returned real data")
     return 0
 
 

@@ -44,7 +44,11 @@ bug; report it privately.
 
 ## Write safety
 
-- The client never posts Banner add/drop/register/withdraw requests.
+- The MCP server never posts add/drop/register/withdraw requests. Only the
+  explicit `unwplanner snipe` command can submit: it defaults to dry-run, and
+  `--live` additionally requires `--i-understand` plus typing the exact term code
+  on stdin. It never drops or withdraws and has not been validated against a live
+  registration window. `windows`/`watch` and the MCP preview are read-only.
 - Banner Plan Ahead writes happen only through the explicit `plan create`,
   `plan add`, `plan remove`, `plan delete` commands and the matching MCP tools.
   They are not triggered by read or planning commands.

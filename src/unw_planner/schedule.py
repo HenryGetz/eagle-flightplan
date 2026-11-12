@@ -434,6 +434,45 @@ def render_grid(
     return body + "\n" + "\n".join(footer)
 
 
+def grid_legend(
+    sections: Iterable[ScheduleSection],
+    *,
+    start: time = time(7, 0),
+    end: time = time(22, 0),
+    step_minutes: int = 30,
+) -> dict[str, list[str]]:
+    """Map every grid label (and overlap slug) to the CRN(s) it represents.
+
+    The grid text is unchanged; this is a side table. A cell label is either one
+    course code or ``"A/B"`` for overlapping courses. Multiple sections of the
+    same course share the base code entry.
+    """
+    sections = list(sections)
+    found: dict[str, set[str]] = {}
+    for section in sections:
+        if section.course_label:
+            found.setdefault(section.course_label, set()).add(section.crn)
+    grid = TimeGrid.from_sections(sections)
+    if step_minutes <= 0:
+        raise ValueError("step_minutes must be > 0")
+    slot = _minutes(start)
+    while slot < _minutes(end):
+        slot_end = min(slot + step_minutes, _minutes(end))
+        for day in DAY_ORDER:
+            active = [
+                section
+                for meeting, section in grid.meetings.get(day, [])
+                if _minutes(meeting.start) < slot_end and _minutes(meeting.end) > slot
+            ]
+            labels = sorted({section.course_label for section in active})
+            if len(labels) > 1:
+                found.setdefault("/".join(labels), set()).update(
+                    section.crn for section in active
+                )
+        slot = slot_end
+    return {label: sorted(crns) for label, crns in sorted(found.items())}
+
+
 def render_grid_checked(
     sections: Iterable["ScheduleSection"],
     *,

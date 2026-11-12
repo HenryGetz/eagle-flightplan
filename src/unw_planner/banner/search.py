@@ -13,6 +13,7 @@ in SQLite so cross-term offering history is a single query.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time as _time
 from datetime import datetime, timezone
@@ -128,7 +129,11 @@ class TermSnapshot(BaseModel):
     def save(self) -> Path:
         ensure_dirs()
         path = TERMS_DIR / f"{self.term}.json"
-        path.write_text(self.model_dump_json(indent=1), encoding="utf-8")
+        # Atomic replace: a crash mid-write must never leave a truncated JSON
+        # file that makes every later read fail.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(self.model_dump_json(indent=1), encoding="utf-8")
+        os.replace(tmp, path)
         TermIndex().upsert(self)
         return path
 
@@ -141,7 +146,12 @@ def load_snapshot(term: str) -> TermSnapshot | None:
     path = snapshot_path(term)
     if not path.exists():
         return None
-    snapshot = TermSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+    try:
+        snapshot = TermSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        # Truncated/corrupt cache (e.g. a crash during an old non-atomic write):
+        # treat it as absent so fetch_term refetches instead of failing forever.
+        return None
     snapshot.meta = snapshot.meta.model_copy(update={"source": "cache"})
     return snapshot
 

@@ -118,7 +118,7 @@ def test_section_detail_accepts_snapshot_section_and_uses_snapshot(monkeypatch):
         return httpx.Response(200, text="<section>none</section>", headers={"content-type": "text/html"})
 
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="https://x/StudentRegistrationSsb/ssb")
-    client = SSBClient(http)
+    client = SSBClient(http, min_interval=0)
     resolved = client.section_detail("999", "202620")
     assert resolved.section is not None
     assert resolved.section.crn == "999"

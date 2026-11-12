@@ -53,6 +53,33 @@ KIND_KEYWORDS: tuple[tuple[tuple[str, ...], GroupKind], ...] = (
 )
 
 IN_PROGRESS_GRADES = {"IP", "PR", "INP", "IPG"}
+# Grades that never earn credit toward a requirement and must not satisfy a
+# prerequisite. The audit must keep the attempt for display and for retakes.
+FAILED_GRADES = {"F", "WF", "FL", "NC", "U", "NP"}
+WITHDRAWN_GRADES = {"W", "WP", "DR"}
+INCOMPLETE_GRADES = {"I", "INC"}
+AUDIT_GRADES = {"AU"}
+
+
+def course_status(grade: str | None) -> str:
+    """Map a Banner/Degree Works letter grade to a course-credit status.
+
+    Only ``completed`` and ``in_progress`` earn credit. Failed, withdrawn,
+    incomplete and audit attempts are retained with their own status so a
+    student can see them and retake the course.
+    """
+    value = (grade or "").upper()
+    if value in IN_PROGRESS_GRADES:
+        return "in_progress"
+    if value in FAILED_GRADES:
+        return "failed"
+    if value in WITHDRAWN_GRADES:
+        return "withdrawn"
+    if value in INCOMPLETE_GRADES:
+        return "incomplete"
+    if value in AUDIT_GRADES:
+        return "audit"
+    return "completed"
 
 
 def _num(value: Any) -> float | None:
@@ -322,6 +349,7 @@ class _AuditParser:
             number = entry.get("number") or ""
             grade = (entry.get("letterGrade") or "").upper()
             in_progress = grade in IN_PROGRESS_GRADES
+            status = course_status(grade)
             record = self.class_records.get(_course_code(subject, number), {})
             transfer_type = (record.get("transferType") or entry.get("transferType") or "").upper()
             transfer_marker = (record.get("transfer") or entry.get("transfer") or "").strip().upper()
@@ -337,7 +365,7 @@ class _AuditParser:
                     title=self.class_titles.get(_course_code(subject, number), ""),
                     credits=_num(entry.get("credits")),
                     grade=None if in_progress else grade,
-                    status="in_progress" if in_progress else "completed",
+                    status=status,
                     term_taken=entry.get("term"),
                     in_progress=in_progress,
                     transfer=is_transfer,

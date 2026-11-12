@@ -85,3 +85,19 @@ def test_term_index_tracks_terms_and_courses(tmp_path):
     index.upsert(snapshot)  # idempotent replace, no duplicate rows
     assert index.section_count("202620") == 4
     index.close()
+
+
+def test_snapshot_save_is_atomic_and_corrupt_cache_is_missing(tmp_path, monkeypatch):
+    from unw_planner.banner import search
+
+    monkeypatch.setattr(search, "TERMS_DIR", tmp_path)
+    monkeypatch.setattr(search, "TERM_INDEX_PATH", tmp_path / "index.sqlite")
+    snapshot = build_snapshot()
+    path = snapshot.save()
+    assert path == tmp_path / "202620.json"
+    assert path.exists()
+    assert not (tmp_path / "202620.json.tmp").exists()
+    assert search.load_snapshot("202620") is not None
+
+    path.write_text("{ this is not json", encoding="utf-8")
+    assert search.load_snapshot("202620") is None

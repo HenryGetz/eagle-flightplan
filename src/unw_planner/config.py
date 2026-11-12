@@ -7,13 +7,46 @@ this module or its callers hardcodes credentials.
 from __future__ import annotations
 
 import os
+import shlex
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def resolve_project_root(
+    *,
+    file_path: Path | None = None,
+    environ: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path:
+    """Resolve the writable data root for both editable and wheel installs.
+
+    Editable installs keep ``config.py`` under ``<repo>/src`` and are detected by
+    the adjacent ``pyproject.toml``. A wheel lives under ``site-packages``; there
+    we prefer ``UNW_HOME`` and fall back to the current directory, never to the
+    interpreter's library directory.
+    """
+    path = Path(file_path) if file_path is not None else Path(__file__).resolve()
+    package_root = path.parents[2] if len(path.parents) >= 3 else path.parent
+    if (package_root / "pyproject.toml").is_file():
+        return package_root
+    env = environ if environ is not None else os.environ
+    override = env.get("UNW_HOME", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    current = Path(cwd) if cwd is not None else Path.cwd()
+    return current.resolve()
+
+
+def login_command() -> str:
+    """The packaged CLI command that repairs a session (works in wheels too)."""
+    return f"{shlex.quote(sys.executable)} -m unw_planner.cli login --force"
+
+
+REPO_ROOT = resolve_project_root()
 ENV_PATH = REPO_ROOT / ".env"
 STATE_DIR = REPO_ROOT / ".state"
 CAPTURES_DIR = REPO_ROOT / "captures"

@@ -41,7 +41,7 @@
      "class": "net.hedtech.banner.student.faculty.FacultyResultDecorator",
      "courseReferenceNumber": "22445",
      "displayName": "Smith, James",
-     "emailAddress": "jlsmith2@unwsp.edu",
+     "emailAddress": "professor@example.edu",
      "primaryIndicator": true,
      "term": "202620"
     }
@@ -151,7 +151,7 @@
      "class": "net.hedtech.banner.student.faculty.FacultyResultDecorator",
      "courseReferenceNumber": "22891",
      "displayName": "Terry, Justin",
-     "emailAddress": "jrterry@unwsp.edu",
+     "emailAddress": "professor@example.edu",
      "primaryIndicator": true,
      "term": "202620"
     }

@@ -5,8 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "unw-planner"
 version = "0.1.0"
-description = "UNW Banner 9 Student Self-Service + degree-audit client foundation"
+description = "UNW Banner 9 + Degree Works course planner, CLI and MCP server"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "unw-planner contributors" }]
 requires-python = ">=3.11"
+keywords = ["unw", "banner", "degree-works", "course-planning", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education",
+]
 dependencies = [
     "httpx>=0.27",
     "playwright>=1.44",
@@ -21,7 +34,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+cov = ["pytest-cov>=5"]
+
+[project.urls]
+Homepage = "https://github.com/HenryGetz/unw-planner"
+Repository = "https://github.com/HenryGetz/unw-planner"
+Issues = "https://github.com/HenryGetz/unw-planner/issues"
 
 [project.scripts]
 unwplanner = "unw_planner.cli:app"
@@ -34,3 +53,77 @@ packages = ["src/unw_planner"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["network: hits live external services; opt in with RMP_RUN_NETWORK=1"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Each entry below is a real violation in a frozen domain module or a file owned
+# by another workstream this turn. New code must pass without per-file ignores.
+# Legacy analysis scripts predate the lint policy; they are not part of the package API.
+"scripts/advise.py" = ["E501", "RUF059"]
+"scripts/capture_web.py" = ["RUF100"]
+"scripts/draft.py" = ["B007", "E501", "I001", "RUF005"]
+"scripts/probe.py" = ["E501"]
+"scripts/reemit_artifacts.py" = ["E501", "I001", "RUF100"]
+"scripts/smoke_mcp.py" = ["RUF100"]
+# Frozen authentication layer; another workstream owns it this turn.
+"src/unw_planner/auth.py" = ["E501", "RUF005", "RUF100", "SIM103", "UP035"]
+# Frozen domain layer: line/import modernization is deferred to its owners.
+"src/unw_planner/audit/client.py" = ["E501"]
+"src/unw_planner/audit/models.py" = ["E501", "I001", "UP037", "UP042"]
+"src/unw_planner/audit/parser.py" = ["E501", "UP035"]
+"src/unw_planner/banner/models.py" = ["E501", "UP037"]
+"src/unw_planner/banner/plan.py" = ["E501", "I001", "RUF005", "SIM102", "UP037"]
+"src/unw_planner/banner/search.py" = ["E501", "RUF100", "UP017", "UP037"]
+"src/unw_planner/banner/ssb.py" = ["E501", "UP035"]
+"src/unw_planner/catalog.py" = ["E501", "RUF001", "SIM103", "UP035", "UP037", "UP042"]
+"src/unw_planner/models.py" = ["E501", "UP037"]
+"src/unw_planner/planner.py" = ["E501", "I001", "RUF001", "RUF059", "RUF100", "UP035"]
+"src/unw_planner/schedule.py" = ["E501", "RUF100", "UP035", "UP037", "UP042"]
+# RMP client is frozen domain code; its protocol constants stay as captured.
+"src/unw_planner/rmp/__init__.py" = ["I001"]
+"src/unw_planner/rmp/cache.py" = ["UP035", "UP037"]
+"src/unw_planner/rmp/client.py" = ["I001", "UP035", "UP037"]
+"src/unw_planner/rmp/match.py" = ["UP035"]
+"src/unw_planner/rmp/models.py" = ["UP017", "UP037"]
+"src/unw_planner/rmp/queries.py" = ["E501"]
+# CLI/report/setup/registration are another workstream's files this turn.
+"src/unw_planner/registration.py" = ["E501", "UP035"]
+"src/unw_planner/setup_cmd.py" = ["E501", "RUF059", "RUF100", "SIM105", "UP035"]
+"src/unw_planner/snipe.py" = ["E501", "I001", "RUF100", "UP035"]
+"src/unw_planner/cli.py" = ["B008", "E501", "I001", "RUF100", "SIM102"]
+"src/unw_planner/report.py" = ["E501", "RUF001", "RUF005", "UP034", "UP035"]
+# Pre-existing tests owned elsewhere; new MCP tests are lint-clean without ignores.
+"tests/test_banner_models.py" = ["E501", "I001", "UP017"]
+"tests/test_banner_plan.py" = ["B017", "E501", "UP017"]
+"tests/test_banner_retry.py" = ["E501"]
+"tests/test_banner_ssb.py" = ["E501"]
+"tests/test_catalog_offerings.py" = ["E501", "UP017"]
+"tests/test_catalog_snapshot.py" = ["E501", "UP017"]
+"tests/test_planner_draft.py" = ["E501", "I001", "UP017"]
+"tests/test_planner_report.py" = ["E501", "UP017"]
+"tests/test_planner_roadmap.py" = ["E501", "UP017"]
+"tests/test_rmp_client.py" = ["I001"]
+"tests/test_schedule_conflicts.py" = ["I001"]
+"tests/test_schedule_grid.py" = ["E501"]
+"tests/test_setup_wizard.py" = ["E501", "RUF059"]
+"tests/test_registration_windows.py" = ["E501", "F401"]
+"tests/test_registration_snipe.py" = ["B017", "E501", "UP017"]
+
+[tool.coverage.run]
+source = ["unw_planner"]
+omit = ["src/unw_planner/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -6,6 +6,7 @@ from unw_planner.schedule import (
     TimeGrid,
     Weekday,
     free_blocks,
+    grid_legend,
     render_grid,
 )
 
@@ -89,3 +90,18 @@ def test_render_grid_checked_rejects_mismatched_crns():
         assert "99999" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("mismatched CRNs must raise")
+
+
+def test_grid_legend_maps_base_codes_and_overlap_slugs():
+    a = ScheduleSection(
+        crn="1001", subject="CYS", number="4245", title="A", term="202620",
+        meetings=(Meeting(day=Weekday.MON, start="1000", end="1100"),),
+    )
+    b = ScheduleSection(
+        crn="1002", subject="BIB", number="4360", title="B", term="202620",
+        meetings=(Meeting(day=Weekday.MON, start="1030", end="1130"),),
+    )
+    legend = grid_legend([a, b])
+    assert legend["CYS 4245"] == ["1001"]
+    assert legend["BIB 4360"] == ["1002"]
+    assert legend["BIB 4360/CYS 4245"] == ["1001", "1002"]

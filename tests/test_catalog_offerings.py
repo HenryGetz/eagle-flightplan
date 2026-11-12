@@ -15,6 +15,7 @@ from unw_planner.banner.search import SnapshotMeta, TermSnapshot
 from unw_planner.catalog import (
     CourseKey,
     OfferingPattern,
+    Priority,
     applied_codes,
     offering_history_attribute,
     offering_history_course,
@@ -247,3 +248,50 @@ def test_attribute_history_and_matrix_rendering():
     table = render_matrix([history], terms)
     assert "ATTRIBUTE CCUL" in table
     assert "Spring 2027" in table
+
+
+def test_required_leadership_block_is_not_demoted_to_fill():
+    audit = Audit(
+        groups=[
+            RequirementGroup(
+                id="RA1",
+                title="LEADERSHIP & PROFESSIONALISM - 6-7 credits",
+                kind=GroupKind.GENED,
+                blocks=[
+                    RequirementBlock(
+                        label="Leading with Courage and Calling-2 credits",
+                        pick_n_of=1,
+                        options=[
+                            CourseRef(subject="LDR", number="1011", status="option"),
+                            CourseRef(subject="LDR", number="2112", status="option"),
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+    requirement = requirements_from_audit(audit)[0]
+    assert requirement.optional is False
+    assert requirement.priority is Priority.GEN_ED_REQUIRED
+
+
+def test_additional_credits_pool_stays_optional():
+    audit = Audit(
+        groups=[
+            RequirementGroup(
+                id="RA2",
+                title="Major: Computer Science",
+                kind=GroupKind.MAJOR,
+                blocks=[
+                    RequirementBlock(
+                        label="Additional credits for double major with Cybersecurity",
+                        notes="choose 8 credits from the following",
+                        options=[CourseRef(subject="DAL", number="", status="option")],
+                    )
+                ],
+            )
+        ]
+    )
+    requirement = requirements_from_audit(audit)[0]
+    assert requirement.optional is True
+    assert requirement.priority is Priority.MAJOR_POOL

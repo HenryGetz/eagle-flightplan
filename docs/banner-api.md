@@ -115,7 +115,7 @@ One search-result row (real, CRN 22445):
  "openSection": true, "linkIdentifier": null, "isSectionLinked": false,
  "subjectCourse": "CYS2081",
  "faculty": [{"bannerId": "9565", "displayName": "Smith, James",
-              "emailAddress": "jlsmith2@unwsp.edu", "primaryIndicator": true,
+              "emailAddress": "professor@example.edu", "primaryIndicator": true,
               "term": "202620"}],
  "meetingsFaculty": [{"category": "01", "courseReferenceNumber": "22445",
    "meetingTime": {"beginTime": "1245", "endTime": "1425",
@@ -297,33 +297,70 @@ end-to-end against the live account (plan created, CRN 22445 added, read back,
 duplicate rejected locally, removed, plan deleted; the student's other plans were
 never touched — there were none).
 
-## Registration page (blocked, documented only)
+## Registration page (blocked; two-phase flow mapped from client code)
 
 `POST /term/search?mode=registration` for `202610` returns
 `studentEligValid: false` with `"You have no Registration Time Ticket for the
 current time."`, and for `202620` `"Term not eligible for registration"`. The
 server then redirects `/classRegistration/classRegistration` to the public
-registration landing page, so the "Register for Classes" UI — and therefore the
-validate/add/drop/waitlist XHRs — could not be observed from this account.
+registration landing page, so the add/drop UI itself could not be exercised.
+
+The client code was still read from the live JS bundles on 2026-11-11. It proves
+the write path is **two-phase**, not one-click:
+
+1. **Stage**: the Add/CRN control POSTs to a server-rendered staging endpoint and
+   creates a *pending* schedule row. Response: `{aaData, anyAuthorizationRequired,
+   anyOLR}`; each `aaData` row has `success`, `message`,
+   `courseReferenceNumber`, `term`, `crnErrors`.
+2. **Commit**: the schedule collection's URL is switched to
+   `#saveButton[data-registration-endpoint]` and a Save click commits the pending
+   adds/drops. The JS proves the collection sync but not the HTTP verb; a POST is
+   the likely Backbone default and is **inferred, not proven**. The literal URL,
+   request body and response are **not** in the JS; they are server-rendered
+   attributes on the blocked page. `#saveButton[data-summary-endpoint]` handles
+   credit-hour and study-path edits.
+
+The term-selection page yields two exact endpoints and one exact body:
+
+| method | endpoint | fields |
+| --- | --- | --- |
+| GET | `/ssb/classRegistration/getTerms` | `searchTerm`, `offset`, `max` → `{code, description}[]` |
+| GET | `/ssb/term/saveTerm?mode=registration` | `{term, uniqueSessionId}` or `{startDatepicker, endDatepicker, uniqueSessionId}` → `{studyPath, maxterm}` |
+| POST | `/ssb/term/search?mode=registration` | `term`, `studyPath`, `studyPathText`, `student`, `altPin`, `stu_pin`, `holdPassword`, `startDatepicker`, `endDatepicker`, `uniqueSessionId` |
+
+The browser also adds `X-Synchronizer-Token: <meta name="synchronizerToken">` to
+every AJAX request via `$.ajaxPrefilter`; the Python client does not send it.
+`uniqueSessionId` is a client-generated value, not a security token.
 
 Consequences, stated plainly:
 
-* The UI's registration write path is **not** mapped here. No add/drop/register/
-  withdraw request was sent (per the brief) and none could be discovered without
-  a time ticket.
+* The UI's registration write path is **partially mapped**: the stage/commit
+  split, the add response shape, and the term-selection bodies are known from
+  client code; the literal stage/Save URLs, Save body, and Save response are
+  server-rendered and remain **unverified**.
 * `POST /ssb/registration/register` (the classic Banner registration write) is
-  **unverified**; do not assume its body or response shape from this document.
-* The "does this combination validate?" call (time conflicts + prerequisites +
-  closed sections in one shot) is likewise **unverified**. Because the planner is
-  fully mapped, the safe substitute is: resolve sections via the planner/search
-  endpoints and run `unw_planner.schedule.find_conflicts()` locally — it uses the
-  same meeting-time data the registration engine uses and handles the linked
-  lecture/lab exemption.
+  **unverified and is not referenced by the captured client code**; do not assume
+  its body or response shape from this document.
+* No separate validate endpoint is proven. The add response carries per-CRN
+  `success`/`message`/`crnErrors`; because the planner is fully mapped, the safe
+  substitute is: resolve sections via the planner/search endpoints and run
+  `unw_planner.schedule.find_conflicts()` locally — it uses the same meeting-time
+  data the registration engine uses and handles the linked lecture/lab exemption.
 
-Endpoint names visible in the registration page markup but not exercised:
-`GET /ssb/registrationHistory/registrationHistory`,
-`GET /ssb/registration/registerPostSignIn`, `GET /ssb/classRegistration/getRegistrationItems`,
-`GET /ssb/classRegistration/getTerms`.
+Endpoints visible in the registration markup:
+
+* `GET /ssb/classRegistration/getTerms` — confirmed from the term-selection page.
+* `GET /ssb/registrationHistory/registrationHistory` — confirmed landing link.
+* `GET /ssb/registration/registerPostSignIn` — this is the unauthenticated
+  `data-login` redirect, **not** a write endpoint.
+* `GET /ssb/classRegistration/getRegistrationItems` — listed in earlier notes but
+  not found in the pages fetched on 2026-11-11; still unverified.
+* `#getRegistrationEvents[data-endpoint]` (GET `{termFilter, crn?}`),
+  `#getSectionCatalogDetails[data-endpoint]`, and
+  `#getCourseCatalogDetails[data-endpoint]` — read-only UI helpers; the last two
+  resolve to `/ssb/searchResults/getClassDetails` and
+  `/ssb/courseSearchResults/getCourseCatalogDetails` on the pages where they were
+  captured.
 
 ## Error shapes
 

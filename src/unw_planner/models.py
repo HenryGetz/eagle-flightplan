@@ -71,8 +71,25 @@ class Section(BaseModel):
 
     @property
     def credits(self) -> float | None:
-        """Credit value used for planning: the high end of a range when present."""
+        """Display credit value: the high end of a range when present."""
         return self.credits_high if self.credits_high is not None else self.credits_low
+
+    @property
+    def planning_credits(self) -> float | None:
+        """Credit value to reserve when planning.
+
+        Variable-credit sections reserve the low end by default; an explicit
+        override can raise or lower it. Fixed-credit sections are unaffected.
+        """
+        return self.credits_low if self.credits_low is not None else self.credits_high
+
+    @property
+    def credit_range(self) -> list[float] | None:
+        if self.credits_low is None and self.credits_high is None:
+            return None
+        if self.credits_high is None or self.credits_high == self.credits_low:
+            return [self.credits_low if self.credits_low is not None else self.credits_high]
+        return [self.credits_low if self.credits_low is not None else self.credits_high, self.credits_high]
 
     @property
     def instructors(self) -> list[str]:

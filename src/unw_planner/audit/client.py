@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from ..auth import AuthError, SessionExpiredError, ensure
+from ..auth import MANUAL_LOGIN_COMMAND, AuthError, SessionExpiredError, ensure
 from .models import Audit
 from .parser import looks_like_html, parse_audit
 
@@ -102,7 +102,7 @@ class AuditClient:
             raise SessionExpiredError(
                 f"{path} returned {response.status_code} {content_type or 'no content-type'} "
                 "instead of JSON — the Degree Works session expired. "
-                "Run `python scripts/login.py --force`."
+                f"Run `{MANUAL_LOGIN_COMMAND}`."
             )
         return response.json()
 

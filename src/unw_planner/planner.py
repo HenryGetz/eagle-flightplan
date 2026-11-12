@@ -22,10 +22,13 @@ desc, credits desc, earlier start, CRN (total order → deterministic output).
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import time as _time
 from datetime import time
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +36,7 @@ from .audit.models import Audit
 from .banner.search import TermSnapshot
 from .catalog import (
     Availability,
+    CourseKey,
     Priority,
     Requirement,
     applied_codes,
@@ -68,6 +72,16 @@ class Constraints(BaseModel):
     include_optional: bool = True
     exclude_arrangement: bool = False
     avoid_instructors: list[str] = Field(default_factory=list)
+    #: Sections/courses the student must take this term. Pins are placed before
+    #: requirement buckets and hard-fail (never silently dropped) when missing,
+    #: excluded, conflicting or prerequisite-blocked.
+    required_crns: list[str] = Field(default_factory=list)
+    required_courses: list[str] = Field(default_factory=list)
+    #: Sections/courses never to propose.
+    excluded_crns: list[str] = Field(default_factory=list)
+    excluded_courses: list[str] = Field(default_factory=list)
+    #: CRN -> credit hours to reserve for variable-credit sections.
+    credit_overrides: dict[str, float] = Field(default_factory=dict)
 
 
 class RatingInfo(BaseModel):
@@ -107,7 +121,13 @@ def _split_name(name: str) -> str:
 
 
 class RatingProvider:
-    """RMP lookups with an on-disk cache (7-day TTL)."""
+    """RMP lookups with an on-disk cache (7-day TTL).
+
+    Entries carry ``fetched_at`` so the TTL is real. Transient failures
+    ("RMP unavailable: ...") are never cached, and legacy entries without a
+    timestamp are discarded on load — an RMP outage can no longer mark a
+    professor unrated forever.
+    """
 
     def __init__(
         self,
@@ -116,35 +136,95 @@ class RatingProvider:
         path: Path | None = None,
         ttl_seconds: int = 7 * 24 * 3600,
         lookup: Callable[[str], RatingInfo] | None = None,
+        clock: Callable[[], float] = _time.time,
     ) -> None:
         self.path = Path(path) if path is not None else RATINGS_PATH
         self.ttl_seconds = ttl_seconds
         self._client = client
         self._lookup = lookup
+        self._clock = clock
         self._memo: dict[str, RatingInfo] = {}
-        self._cache: dict[str, dict] = {}
-        if self.path.exists():
-            try:
-                self._cache = json.loads(self.path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                self._cache = {}
+        self._cache = self._load()
+
+    @staticmethod
+    def _is_failure(info: RatingInfo) -> bool:
+        return info.note.startswith("RMP unavailable")
+
+    @staticmethod
+    def parse_cache_entry(entry: object) -> tuple[dict, float] | None:
+        """Normalize flat (current), nested (transitional) and legacy entries.
+
+        Current format: all ``RatingInfo`` fields at the top level plus
+        ``fetched_at``. The nested ``{"info": {...}, "fetched_at": ...}`` form is
+        still read so old cache files and old processes remain compatible.
+        A legacy entry without ``fetched_at`` is kept but treated as expired.
+        """
+        if not isinstance(entry, dict):
+            return None
+        if "info" in entry:
+            payload = entry.get("info")
+            if not isinstance(payload, dict):
+                return None
+            data = payload
+            fetched_raw = entry.get("fetched_at", 0)
+        else:
+            data = {key: value for key, value in entry.items() if key != "fetched_at"}
+            fetched_raw = entry.get("fetched_at", 0)
+        try:
+            info = RatingInfo(**data)
+            fetched_at = float(fetched_raw or 0)
+        except Exception:  # noqa: BLE001 - corrupt/legacy cache row
+            return None
+        if info.note.startswith("RMP unavailable"):
+            return None
+        return info.model_dump(), fetched_at
+
+    def _load(self) -> dict[str, dict]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        clean: dict[str, dict] = {}
+        for key, entry in raw.items():
+            parsed = self.parse_cache_entry(entry)
+            if parsed is None:
+                continue
+            info, fetched_at = parsed
+            clean[str(key)] = {**info, "fetched_at": fetched_at}
+        return clean
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self._cache, indent=1), encoding="utf-8")
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        # Flat format only: old processes can still construct RatingInfo from
+        # this row (extra fetched_at is ignored); the nested form crashes them.
+        tmp.write_text(json.dumps(self._cache, indent=1), encoding="utf-8")
+        os.replace(tmp, self.path)
 
-    def get(self, instructor: str) -> RatingInfo:
+    def _fresh(self, entry: dict) -> bool:
+        return self._clock() - float(entry.get("fetched_at", 0)) < self.ttl_seconds
+
+    def get(self, instructor: str, refresh: bool = False) -> RatingInfo:
         key = instructor.strip()
-        if key in self._memo:
-            return self._memo[key]
-        cached = self._cache.get(key)
-        if cached:
-            info = RatingInfo(**cached)
-            self._memo[key] = info
-            return info
+        if not refresh:
+            cached = self._cache.get(key)
+            if cached and self._fresh(cached):
+                info = RatingInfo(**{k: v for k, v in cached.items() if k != "fetched_at"})
+                self._memo[key] = info
+                return info
+            # No fresh entry: a memoized success must not outlive the TTL, and a
+            # memoized failure must never be served at all.
+            self._memo.pop(key, None)
         info = self._lookup(key) if self._lookup else self._fetch(key)
         self._memo[key] = info
-        self._cache[key] = info.model_dump()
+        if self._is_failure(info):
+            self._cache.pop(key, None)
+        else:
+            self._cache[key] = {**info.model_dump(), "fetched_at": self._clock()}
         self._save()
         return info
 
@@ -178,6 +258,37 @@ class RatingProvider:
         )
 
 
+def migrate_ratings_file(path: Path) -> Path | None:
+    """Rewrite ``path`` as flat rating entries, preserving entries in a backup.
+
+    Applies to both the nested transitional format and legacy flat rows. Rated
+    and unrated entries are kept; transient ``RMP unavailable`` failures are
+    dropped. Returns the backup path, or ``None`` when there is nothing to do.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, TypeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    clean: dict[str, dict] = {}
+    for key, entry in raw.items():
+        parsed = RatingProvider.parse_cache_entry(entry)
+        if parsed is None:
+            continue
+        info, fetched_at = parsed
+        clean[str(key)] = {**info, "fetched_at": fetched_at}
+    backup = path.with_name(path.name + ".bak")
+    shutil.copy2(path, backup)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(clean, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return backup
+
+
 # --------------------------------------------------------------------------- #
 # prerequisites
 # --------------------------------------------------------------------------- #
@@ -192,15 +303,27 @@ TOKEN_RE = re.compile(
 
 
 class PrereqExpression(BaseModel):
-    """Parsed Banner prerequisite text (``and`` binds tighter than ``or``)."""
+    """Parsed prerequisite text (``and`` binds tighter than ``or``).
+
+    ``parse_status`` is a tri-state gate, because "no prerequisites" and "text I
+    could not parse" must never be conflated:
+
+    * ``none``   -- Banner reports no prerequisite information (satisfied)
+    * ``parsed`` -- at least one course code was extracted and a tree built
+    * ``unknown`` -- non-empty text with no recognizable course code; callers
+      must treat the prerequisite as unverified, not satisfied.
+    """
 
     raw: str = ""
     codes: list[str] = Field(default_factory=list)
     tree: list = Field(default_factory=list)
+    parse_status: Literal["none", "parsed", "unknown"] = "none"
 
-    def satisfied_by(self, passed: set[str]) -> bool:
-        if not self.tree:
+    def satisfied_by(self, passed: set[str]) -> bool | None:
+        if self.parse_status == "none":
             return True
+        if self.parse_status != "parsed":
+            return None
         return _evaluate(self.tree, passed)
 
 
@@ -215,13 +338,53 @@ def _evaluate(node: list, passed: set[str]) -> bool:
     return True
 
 
-def parse_prerequisites(text: str) -> PrereqExpression:
-    """Parse the flattened Banner fragment; empty tree == no prerequisites."""
-    raw = " ".join(text.split())
-    if not raw or "no prerequisite information available" in raw.lower():
-        return PrereqExpression(raw=raw)
-    marker = raw.find("Prerequisites:")
-    body = raw[marker + len("Prerequisites:"):] if marker >= 0 else raw
+def _build_tree(tokens: list[tuple[str, str]]) -> list:
+    """Build the boolean tree from ``(KIND, value)`` tokens, ``and`` > ``or``."""
+    index = 0
+
+    def parse_expression() -> list:
+        nonlocal index
+        while index < len(tokens) and tokens[index][0] == "OR":
+            index += 1
+        children = [parse_term()]
+        while index < len(tokens) and tokens[index][0] == "OR":
+            index += 1
+            children.append(parse_term())
+        return children[0] if len(children) == 1 else ["OR", children]
+
+    def parse_term() -> list:
+        nonlocal index
+        while index < len(tokens) and tokens[index][0] == "AND":
+            index += 1
+        children = [parse_factor()]
+        while index < len(tokens) and tokens[index][0] == "AND":
+            index += 1
+            children.append(parse_factor())
+        return children[0] if len(children) == 1 else ["AND", children]
+
+    def parse_factor() -> list:
+        nonlocal index
+        while index < len(tokens) and tokens[index][0] not in {"(", "CODE"}:
+            index += 1
+        if index < len(tokens) and tokens[index][0] == "(":
+            index += 1
+            node = parse_expression()
+            if index < len(tokens) and tokens[index][0] == ")":
+                index += 1
+            return node
+        if index < len(tokens) and tokens[index][0] == "CODE":
+            node = ["CODE", tokens[index][1]]
+            index += 1
+            return node
+        if index < len(tokens):
+            index += 1
+        return ["CODE", "__unparsed__"]
+
+    return parse_expression()
+
+
+def _banner_tokens(body: str) -> list[tuple[str, str]]:
+    """Tokenize Banner's structured ``Course or Test:`` / and / or / () text."""
     tokens: list[tuple[str, str]] = []
     position = 0
     while position < len(body):
@@ -242,46 +405,92 @@ def parse_prerequisites(text: str) -> PrereqExpression:
             tokens.append(("(", "("))
         elif match.group("close"):
             tokens.append((")", ")"))
-    if not tokens:
-        return PrereqExpression(raw=raw)
+    return tokens
 
-    expression = PrereqExpression(raw=raw, codes=[value for kind, value in tokens if kind == "CODE"])
-    index = 0
 
-    def parse_expression() -> list:
-        nonlocal index
-        children = [parse_term()]
-        while index < len(tokens) and tokens[index][0] == "OR":
-            index += 1
-            children.append(parse_term())
-        return children[0] if len(children) == 1 else ["OR", children]
+#: Fallback for catalog prose ("Prerequisite: CYS 3065", "PQ: COS 2015 or COS 2112").
+#: Uppercase-only subjects keep words like "in 2016" out of the result.
+PROSE_CODE_RE = re.compile(r"(?<![A-Za-z])([A-Z]{2,6})\s*-?\s*(\d{3,4}[A-Za-z]?)(?![A-Za-z0-9])")
+PROSE_LIST_RE = re.compile(
+    r"\s*(?:(?:,|/)\s*(?:and|or)?|(?:and|or))\s*(\d{3,4}[A-Za-z]?)(?![A-Za-z0-9])"
+)
+PROSE_TARGET_RE = re.compile(
+    r"\b(?:PQ|Prerequisites?)\s+for\s+([A-Za-z]{2,6})\s*-?\s*(\d{3,4}[A-Za-z]?)",
+    re.IGNORECASE,
+)
+PROSE_BLOCKLIST = {"PQ", "AND", "OR", "THE", "FOR", "MIN", "GPA"}
 
-    def parse_term() -> list:
-        nonlocal index
-        children = [parse_factor()]
-        while index < len(tokens) and tokens[index][0] == "AND":
-            index += 1
-            children.append(parse_factor())
-        return children[0] if len(children) == 1 else ["AND", children]
 
-    def parse_factor() -> list:
-        nonlocal index
-        if index < len(tokens) and tokens[index][0] == "(":
-            index += 1
-            node = parse_expression()
-            if index < len(tokens) and tokens[index][0] == ")":
-                index += 1
-            return node
-        if index < len(tokens) and tokens[index][0] == "CODE":
-            node = ["CODE", tokens[index][1]]
-            index += 1
-            return node
-        if index < len(tokens):
-            index += 1
-        return ["CODE", "__unparsed__"]
+def _prose_tokens(text: str) -> list[tuple[str, str]]:
+    """Best-effort extraction from prose when no ``Course or Test:`` text exists."""
+    target = PROSE_TARGET_RE.search(text)
+    target_code = (
+        f"{target.group(1).upper()} {target.group(2).upper()}" if target else None
+    )
+    found: list[tuple[int, int, str]] = []
+    for match in PROSE_CODE_RE.finditer(text):
+        subject = match.group(1).upper()
+        if subject in PROSE_BLOCKLIST:
+            continue
+        code = f"{subject} {match.group(2).upper()}"
+        if code == target_code:
+            # "PQ for CYS 4855" names the section being described, not a prereq.
+            continue
+        found.append((match.start(), match.end(), code))
+        position = match.end()
+        while True:
+            item = PROSE_LIST_RE.match(text, position)
+            if not item:
+                break
+            found.append((item.start(1), item.end(), f"{subject} {item.group(1).upper()}"))
+            position = item.end()
 
-    expression.tree = parse_expression()
-    return expression
+    ordered: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for entry in sorted(found, key=lambda row: row[0]):
+        if entry[2] in seen:
+            continue
+        seen.add(entry[2])
+        ordered.append(entry)
+
+    tokens: list[tuple[str, str]] = []
+    previous_end: int | None = None
+    for start, end, code in ordered:
+        if previous_end is not None:
+            between = text[previous_end:start].lower()
+            connector = "OR" if (" or " in between or "," in between or "/" in between) else "AND"
+            tokens.append((connector, connector.lower()))
+        tokens.append(("CODE", code))
+        previous_end = end
+    return tokens
+
+
+def parse_prerequisites(text: str) -> PrereqExpression:
+    """Parse Banner prerequisite text into a tri-state :class:`PrereqExpression`."""
+    raw = " ".join(text.split())
+    if not raw or "no prerequisite information available" in raw.lower():
+        return PrereqExpression(raw=raw, parse_status="none")
+    marker = raw.find("Prerequisites:")
+    body = raw[marker + len("Prerequisites:"):] if marker >= 0 else raw
+
+    structured = _banner_tokens(body)
+    if any(kind == "CODE" for kind, _ in structured):
+        return PrereqExpression(
+            raw=raw,
+            codes=[value for kind, value in structured if kind == "CODE"],
+            tree=_build_tree(structured),
+            parse_status="parsed",
+        )
+
+    prose = _prose_tokens(raw)
+    if prose:
+        return PrereqExpression(
+            raw=raw,
+            codes=[value for kind, value in prose if kind == "CODE"],
+            tree=_build_tree(prose),
+            parse_status="parsed",
+        )
+    return PrereqExpression(raw=raw, parse_status="unknown")
 
 
 class PrereqProvider:
@@ -305,9 +514,16 @@ class PrereqProvider:
         path = self._path(section.term, section.crn)
         if path.exists():
             try:
-                return PrereqExpression(**json.loads(path.read_text(encoding="utf-8")))
+                cached = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, TypeError):
-                pass
+                cached = None
+            if cached and cached.get("raw"):
+                # Re-parse cached text so parser fixes apply without a refetch.
+                return parse_prerequisites(cached["raw"])
+            if cached:
+                if not cached.get("parse_status"):
+                    cached["parse_status"] = "parsed" if cached.get("tree") else "none"
+                return PrereqExpression(**cached)
         if self.fetcher is not None:
             text = self.fetcher(section)
         else:
@@ -322,14 +538,23 @@ class PrereqProvider:
         path.write_text(expression.model_dump_json(), encoding="utf-8")
         return expression
 
-    def check(self, section: Section, passed: set[str]) -> tuple[bool, str]:
+    def check(self, section: Section, passed: set[str]) -> tuple[bool | None, str]:
+        """``True`` satisfied, ``False`` blocked, ``None`` unverifiable.
+
+        A fetch failure or unparsable non-empty text returns ``None``; callers
+        must not treat that as an allowed prerequisite.
+        """
         try:
             expression = self.expression(section)
         except Exception as exc:  # noqa: BLE001 - never fail planning on fetch errors
-            return True, f"prerequisite text unavailable ({exc.__class__.__name__})"
-        missing = [code for code in expression.codes if code not in passed]
-        if expression.satisfied_by(passed):
+            return None, f"prerequisite text unavailable ({exc.__class__.__name__})"
+        result = expression.satisfied_by(passed)
+        if result is True:
             return True, ""
+        if result is None:
+            snippet = " ".join(expression.raw.split())[:160]
+            return None, f"prerequisite text could not be parsed ({snippet!r})"
+        missing = [code for code in expression.codes if code not in passed]
         return False, "needs " + (", ".join(missing) or "an unmet prerequisite")
 
 
@@ -357,6 +582,10 @@ class Selection(BaseModel):
     meets: list[str] = Field(default_factory=list)
     covers: list[str] = Field(default_factory=list)
     rationale: str = ""
+    #: True when Banner's prerequisite text could not be fetched or parsed. The
+    #: section is still placed (unknown is not proof of failure) but must be
+    #: checked before registration.
+    prereq_unverified: bool = False
 
 
 class Unplaced(BaseModel):
@@ -366,15 +595,38 @@ class Unplaced(BaseModel):
     reason: str
 
 
+class Pinned(BaseModel):
+    """Outcome of one required CRN/course the student insisted on."""
+
+    request: str
+    kind: Literal["crn", "course"]
+    outcome: Literal[
+        "placed", "unavailable", "conflict", "prereq_blocked", "excluded", "budget"
+    ]
+    crn: str | None = None
+    course: str | None = None
+    requirement_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "placed"
+
+
 class DraftPlan(BaseModel):
     term: str
     label: str = ""
     selections: list[Selection] = Field(default_factory=list)
     unplaced_requirements: list[Unplaced] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    pinned: list[Pinned] = Field(default_factory=list)
     grid: str = ""
     total_credits: float = 0.0
     score_breakdown: list[str] = Field(default_factory=list)
+    min_credits: float = 0.0
+    min_credits_met: bool = True
+    credit_overrides: dict[str, float] = Field(default_factory=dict)
 
     @property
     def crns(self) -> list[str]:
@@ -442,7 +694,7 @@ class Planner:
         key = (
             *_rating_key(rating),
             -(section.seats_available if section.seats_available is not None else -1),
-            -(section.credits or 0),
+            -(self._credits(section, constraints)),
             1 if section.unscheduled else 0,
             meeting_start(section),
             section.crn,
@@ -450,6 +702,74 @@ class Planner:
         return key, name, rating
 
     # -------------------------------------------------------------------- hard
+    @staticmethod
+    def _credits(section: Section, constraints: Constraints) -> float:
+        """Credits to reserve for one section (override > low end > high end)."""
+        override = constraints.credit_overrides.get(str(section.crn))
+        if override is not None:
+            return float(override)
+        return float(section.planning_credits or 0.0)
+
+    @staticmethod
+    def _excluded_sets(constraints: Constraints) -> tuple[set[str], set[str]]:
+        return (
+            {str(crn).strip() for crn in constraints.excluded_crns if str(crn).strip()},
+            {str(code).strip().upper() for code in constraints.excluded_courses if str(code).strip()},
+        )
+
+    @staticmethod
+    def _matches_requirement(section: Section, requirement: Requirement) -> bool:
+        """Mirror :func:`catalog.resolve` matching for pinned-section coverage."""
+        if requirement.all_of and not set(requirement.all_of) <= section.attribute_codes:
+            return False
+        if requirement.subjects and section.subject.upper() not in {
+            subject.upper() for subject in requirement.subjects
+        }:
+            return False
+        if section.code.upper() in {target.code.upper() for target in requirement.targets}:
+            return True
+        if requirement.attributes and set(requirement.attributes) & section.attribute_codes:
+            return True
+        return bool(
+            requirement.subject_wildcards
+            and section.subject.upper()
+            in {wildcard.upper() for wildcard in requirement.subject_wildcards}
+        )
+
+    @staticmethod
+    def _pin_failure_outcome(reason: str) -> str:
+        lowered = reason.lower()
+        if lowered.startswith("needs ") or "prerequisite" in lowered:
+            return "prereq_blocked"
+        if lowered.startswith("budget"):
+            return "budget"
+        return "conflict"
+
+    def _record_pin(
+        self,
+        plan: DraftPlan,
+        request: str,
+        kind: str,
+        outcome: str,
+        crn: str | None,
+        course: str | None,
+        requirement_ids: Sequence[str],
+        reason: str,
+    ) -> None:
+        plan.pinned.append(
+            Pinned(
+                request=request,
+                kind=kind,  # type: ignore[arg-type]
+                outcome=outcome,  # type: ignore[arg-type]
+                crn=crn,
+                course=course,
+                requirement_ids=list(requirement_ids),
+                reason=reason,
+            )
+        )
+        if outcome != "placed":
+            plan.errors.append(f"pinned {kind} {request!r} was not placed ({outcome}): {reason}")
+
     def _fits(
         self,
         section: Section,
@@ -457,28 +777,35 @@ class Planner:
         credits_used: float,
         constraints: Constraints,
         passed: set[str],
-    ) -> tuple[bool, str]:
-        credits = section.credits or 0
+    ) -> tuple[bool, str, bool]:
+        """Return ``(allowed, reason, prereq_unverified)``."""
+        credits = self._credits(section, constraints)
         if credits_used + credits > constraints.max_credits + 1e-6:
-            return False, f"budget: {credits_used:g}+{credits:g} exceeds {constraints.max_credits:g} credits"
+            return False, f"budget: {credits_used:g}+{credits:g} exceeds {constraints.max_credits:g} credits", False
         if set(section.days) & set(constraints.avoid_days):
             blocked = ", ".join(day.value for day in set(section.days) & set(constraints.avoid_days))
-            return False, f"meets on avoided day {blocked}"
+            return False, f"meets on avoided day {blocked}", False
+        avoided = {name.strip().lower() for name in constraints.avoid_instructors if name.strip()}
+        if avoided:
+            people = [person.name.strip().lower() for person in section.faculty if person.name]
+            if people and all(person in avoided for person in people):
+                names = ", ".join(person.name for person in section.faculty if person.name)
+                return False, f"taught only by avoided instructor(s): {names}", False
         if constraints.earliest or constraints.latest:
             for meeting in section.meetings:
                 if not meeting.scheduled:
                     continue
                 if constraints.earliest and meeting.start < constraints.earliest:
-                    return False, f"starts before {constraints.earliest.strftime('%H:%M')}"
+                    return False, f"starts before {constraints.earliest.strftime('%H:%M')}", False
                 if constraints.latest and meeting.end > constraints.latest:
-                    return False, f"ends after {constraints.latest.strftime('%H:%M')}"
+                    return False, f"ends after {constraints.latest.strftime('%H:%M')}", False
         clash = find_conflicts([s.to_schedule_section() for s in selected] + [section.to_schedule_section()])
         if clash:
-            return False, f"time conflict: {clash[0].summary}"
+            return False, f"time conflict: {clash[0].summary}", False
         ok, reason = self.prereqs.check(section, passed)
-        if not ok:
-            return False, reason
-        return True, ""
+        if ok is False:
+            return False, reason, False
+        return True, reason, ok is None
 
     # ------------------------------------------------------------------- draft
     def draft(
@@ -496,13 +823,24 @@ class Planner:
             raise PlannerError(f"No catalog snapshot for term {term}. Fetch it first.")
         pool = [r for r in (requirements if requirements is not None else self.requirements) if not r.satisfied]
 
-        plan = DraftPlan(term=term, label=term_label(term))
+        plan = DraftPlan(
+            term=term,
+            label=term_label(term),
+            min_credits=constraints.min_credits,
+            credit_overrides={str(crn): float(hours) for crn, hours in constraints.credit_overrides.items()},
+        )
         selected: list[Section] = []
         selected_codes: set[str] = set()
         by_crn: dict[str, Selection] = {}
-        credits_used = 0.0
+        #: requirement id -> [credits already covered by pins, pick count]
+        pin_progress: dict[str, list[float]] = {}
         unrated_picks = 0
         rated_picks: list[RatingInfo] = []
+
+        self._place_pins(
+            plan, snapshot, constraints, selected, selected_codes, by_crn, passed, pool, pin_progress
+        )
+        credits_used = round(sum(self._credits(section, constraints) for section in selected), 2)
 
         # Priority buckets: budget is allocated in this order, rating is the
         # tie-break inside a bucket (never across buckets).
@@ -547,11 +885,15 @@ class Planner:
             for _, requirement, resolution in sorted(buckets[priority], key=lambda item: item[0]):
                 self._place_requirement(
                     plan, requirement, resolution, snapshot, constraints,
-                    selected, selected_codes, by_crn, credits_used, passed,
+                    selected, selected_codes, by_crn, credits_used, passed, pin_progress,
                 )
-                credits_used = round(sum(section.credits or 0 for section in selected), 2)
-                if credits_used > constraints.max_credits:
+                credits_used = round(sum(self._credits(section, constraints) for section in selected), 2)
+                if credits_used > constraints.max_credits + 1e-6:
                     raise PlannerError("credit accounting exceeded max_credits")
+
+        self._fill_to_minimum(
+            plan, pool, snapshot, constraints, selected, selected_codes, by_crn, passed
+        )
 
         for selection in plan.selections:
             if selection.rating.rated:
@@ -562,12 +904,187 @@ class Planner:
             plan.warnings.append(
                 "some sections are not open yet (future term); verify seats when registration opens"
             )
-        plan.total_credits = round(sum(section.credits or 0 for section in selected), 2)
+        plan.total_credits = round(
+            sum(self._credits(section, constraints) for section in selected), 2
+        )
+        if constraints.min_credits:
+            plan.min_credits_met = plan.total_credits + 1e-9 >= constraints.min_credits
         plan.grid = render_grid(
             [section.to_schedule_section() for section in selected], include_tba=True
         ) if selected else ""
         plan.score_breakdown = self._score_breakdown(plan, rated_picks, unrated_picks, constraints)
         return plan
+
+    def _place_pins(
+        self,
+        plan: DraftPlan,
+        snapshot: TermSnapshot,
+        constraints: Constraints,
+        selected: list[Section],
+        selected_codes: set[str],
+        by_crn: dict[str, Selection],
+        passed: set[str],
+        pool: Sequence[Requirement],
+        pin_progress: dict[str, list[float]],
+    ) -> None:
+        """Place the student's explicitly required CRNs/courses before anything else."""
+        requests: list[tuple[str, str]] = [
+            ("crn", str(crn).strip()) for crn in constraints.required_crns if str(crn).strip()
+        ]
+        requests += [
+            ("course", str(code).strip()) for code in constraints.required_courses if str(code).strip()
+        ]
+        excluded_crns, excluded_courses = self._excluded_sets(constraints)
+        credits_used = round(sum(self._credits(section, constraints) for section in selected), 2)
+
+        for kind, request in requests:
+            prereq_unverified = False
+            if kind == "crn":
+                section = snapshot.by_crn(request)
+                if section is None:
+                    self._record_pin(
+                        plan, request, kind, "unavailable", None, None, [],
+                        f"CRN {request} is not offered in {snapshot.term}",
+                    )
+                    continue
+                if request in excluded_crns or section.code.upper() in excluded_courses:
+                    self._record_pin(
+                        plan, request, kind, "excluded", request, section.code, [],
+                        "the CRN or its course is in the exclusion list",
+                    )
+                    continue
+                if request in by_crn:
+                    existing = by_crn[request]
+                    self._record_pin(
+                        plan, request, kind, "placed", request, section.code,
+                        list(existing.covers), "already placed by an earlier pin",
+                    )
+                    continue
+                allowed, reason, prereq_unverified = self._fits(
+                    section, selected, credits_used, constraints, passed
+                )
+                if not allowed:
+                    self._record_pin(
+                        plan, request, kind, self._pin_failure_outcome(reason), request,
+                        section.code, [], reason,
+                    )
+                    continue
+                chosen = section
+            else:
+                try:
+                    key = CourseKey.parse(request)
+                except ValueError as exc:
+                    self._record_pin(
+                        plan, request, kind, "unavailable", None, None, [], str(exc)
+                    )
+                    continue
+                if key.code.upper() in excluded_courses:
+                    self._record_pin(
+                        plan, request, kind, "excluded", None, key.code, [],
+                        "the course is in the exclusion list",
+                    )
+                    continue
+                candidates = [
+                    candidate
+                    for candidate in snapshot.by_course(key.subject, key.number)
+                    if str(candidate.crn) not in excluded_crns
+                ]
+                if not candidates:
+                    self._record_pin(
+                        plan, request, kind, "unavailable", None, key.code, [],
+                        f"{key.code} is not offered in {snapshot.term}",
+                    )
+                    continue
+                chosen = None
+                first_failure = ""
+                for candidate in sorted(candidates, key=lambda item: self._rank(item, constraints)[0]):
+                    if candidate.crn in by_crn:
+                        chosen = candidate
+                        prereq_unverified = False
+                        break
+                    allowed, reason, unknown = self._fits(
+                        candidate, selected, credits_used, constraints, passed
+                    )
+                    if allowed:
+                        chosen = candidate
+                        prereq_unverified = unknown
+                        break
+                    first_failure = first_failure or reason
+                if chosen is None:
+                    outcome = self._pin_failure_outcome(first_failure or "no eligible section")
+                    self._record_pin(
+                        plan, request, kind, outcome, None, key.code, [],
+                        first_failure or "no eligible section matched the constraints",
+                    )
+                    continue
+
+            if chosen.crn in by_crn:
+                existing = by_crn[chosen.crn]
+                self._record_pin(
+                    plan, request, kind, "placed", chosen.crn, chosen.code,
+                    list(existing.covers), "already placed by an earlier pin",
+                )
+                continue
+
+            state = availability_of(chosen, self.current_term)
+            if not chosen.open and state is Availability.CLOSED:
+                plan.warnings.append(
+                    f"pinned {chosen.code} CRN {chosen.crn} is closed/full in {plan.term}; verify before registering"
+                )
+            if state is not Availability.OPEN:
+                plan.warnings.append(
+                    f"pinned {chosen.code} CRN {chosen.crn} is not open yet in {plan.term}; verify at registration"
+                )
+            _, instructor, rating = self._rank(chosen, constraints)
+            matched = [requirement for requirement in pool if self._matches_requirement(chosen, requirement)]
+            primary = matched[0] if matched else None
+            credits = self._credits(chosen, constraints)
+            selection = Selection(
+                requirement_id=primary.id if primary else "pin",
+                requirement=primary.label if primary else "pinned by request",
+                group=primary.parent_group if primary else "pins",
+                crn=chosen.crn,
+                course=chosen.code,
+                section=chosen.section,
+                title=chosen.title,
+                instructor=instructor,
+                rating=rating,
+                times=chosen.time_label,
+                days=chosen.day_label,
+                credits=credits,
+                seats=chosen.seats_available,
+                open=chosen.open,
+                availability=state.value,
+                verify_at_registration=state is not Availability.OPEN,
+                requires_arrangement=bool(primary and primary.requires_arrangement),
+                meets=[
+                    f"{meeting.day.value} {meeting.start.strftime('%H:%M')}-{meeting.end.strftime('%H:%M')} {meeting.location}".strip()
+                    for meeting in chosen.meetings
+                    if meeting.scheduled
+                ],
+                covers=[requirement.id for requirement in matched],
+                rationale="pinned by request"
+                + (f"; {self._rationale(primary, chosen, instructor, rating, state)}" if primary else ""),
+                prereq_unverified=prereq_unverified,
+            )
+            plan.selections.append(selection)
+            by_crn[chosen.crn] = selection
+            selected_codes.add(chosen.code)
+            selected.append(chosen)
+            credits_used = round(credits_used + credits, 2)
+            if prereq_unverified:
+                plan.warnings.append(
+                    f"pinned {chosen.code} CRN {chosen.crn}: prerequisite could not be "
+                    "verified; confirm before registering"
+                )
+            for requirement in matched:
+                bucket = pin_progress.setdefault(requirement.id, [0.0, 0.0])
+                bucket[0] += credits
+                bucket[1] += 1
+            self._record_pin(
+                plan, request, kind, "placed", chosen.crn, chosen.code,
+                [requirement.id for requirement in matched], "",
+            )
 
     def _place_requirement(
         self,
@@ -581,46 +1098,62 @@ class Planner:
         by_crn: dict[str, Selection],
         credits_used: float,
         passed: set[str],
+        pin_progress: dict[str, list[float]],
     ) -> None:
-        placed_for_requirement = 0
+        excluded_crns, excluded_courses = self._excluded_sets(constraints)
         candidates = sorted(
-            resolution.candidates,
+            (
+                section
+                for section in resolution.candidates
+                if str(section.crn) not in excluded_crns
+                and section.code.upper() not in excluded_courses
+            ),
             key=lambda section: self._rank(section, constraints)[0],
         )
         if not candidates:
+            reason = resolution.reason or "no candidate sections"
+            if resolution.candidates:
+                reason = "every candidate section is excluded by constraints"
             plan.unplaced_requirements.append(
                 Unplaced(
                     requirement_id=requirement.id,
                     requirement=requirement.label,
                     group=requirement.parent_group,
-                    reason=resolution.reason or "no candidate sections",
+                    reason=reason,
                 )
             )
             return
+        pin_credits, pin_count = (pin_progress.get(requirement.id) or [0.0, 0.0])[:2]
+        placed_for_requirement = int(pin_count)
         needed = requirement.pick_n_of or (len(candidates) if requirement.min_credits else 1)
         credits_needed = requirement.min_credits
-        covered_credits = requirement.applied_credits
+        covered_credits = requirement.applied_credits + float(pin_credits)
         if requirement.pick_n_of is not None:
             needed = max(0, requirement.pick_n_of - requirement.applied_count)
 
         for section in candidates:
             if placed_for_requirement >= needed:
                 break
+            credits = self._credits(section, constraints)
             if credits_needed is not None:
                 if covered_credits >= credits_needed:
                     break
-                if not section.credits:
+                if not credits:
                     continue
             if section.crn in by_crn:
                 existing = by_crn[section.crn]
-                if requirement.id not in existing.covers:
-                    existing.covers.append(requirement.id)
+                if requirement.id in existing.covers:
+                    # Already counted when the section was placed as a pin.
+                    continue
+                existing.covers.append(requirement.id)
                 covered_credits += existing.credits or 0
                 placed_for_requirement += 1
                 continue
             if section.code in selected_codes:
                 continue
-            fits, reason = self._fits(section, selected, credits_used, constraints, passed)
+            fits, reason, prereq_unverified = self._fits(
+                section, selected, credits_used, constraints, passed
+            )
             if not fits:
                 continue
             _, instructor, rating = self._rank(section, constraints)
@@ -637,7 +1170,7 @@ class Planner:
                 rating=rating,
                 times=section.time_label,
                 days=section.day_label,
-                credits=section.credits,
+                credits=credits,
                 seats=section.seats_available,
                 open=section.open,
                 availability=state.value,
@@ -650,14 +1183,20 @@ class Planner:
                 ],
                 covers=[requirement.id],
                 rationale=self._rationale(requirement, section, instructor, rating, state),
+                prereq_unverified=prereq_unverified,
             )
             plan.selections.append(selection)
             by_crn[section.crn] = selection
             selected_codes.add(section.code)
             selected.append(section)
-            credits_used += section.credits or 0
-            covered_credits += section.credits or 0
+            credits_used += credits
+            covered_credits += credits
             placed_for_requirement += 1
+            if prereq_unverified:
+                plan.warnings.append(
+                    f"{section.code} CRN {section.crn}: prerequisite could not be verified "
+                    f"({reason}); confirm before registering"
+                )
             if state is not Availability.OPEN:
                 plan.warnings.append(
                     f"{section.code} CRN {section.crn} is not open yet in {plan.term}; verify at registration"
@@ -669,7 +1208,7 @@ class Planner:
                 )
 
         if placed_for_requirement == 0:
-            fits, why = self._fits(candidates[0], selected, credits_used, constraints, passed)
+            _, why, _ = self._fits(candidates[0], selected, credits_used, constraints, passed)
             plan.unplaced_requirements.append(
                 Unplaced(
                     requirement_id=requirement.id,
@@ -689,6 +1228,120 @@ class Planner:
                         f"required credits in {plan.term}"
                     ),
                 )
+            )
+
+    def _fill_to_minimum(
+        self,
+        plan: DraftPlan,
+        pool: Sequence[Requirement],
+        snapshot: TermSnapshot,
+        constraints: Constraints,
+        selected: list[Section],
+        selected_codes: set[str],
+        by_crn: dict[str, Selection],
+        passed: set[str],
+    ) -> None:
+        """Top up to ``min_credits`` from elective/optional pools only.
+
+        Never invents courses: every added section is a real open catalog section
+        that passes every hard constraint.
+        """
+        target = constraints.min_credits
+        if target <= 0:
+            return
+        excluded_crns, excluded_courses = self._excluded_sets(constraints)
+        credits_used = round(sum(self._credits(section, constraints) for section in selected), 2)
+        if credits_used + 1e-9 >= target:
+            plan.min_credits_met = True
+            return
+
+        ordered = sorted(
+            (
+                requirement
+                for requirement in pool
+                if requirement.optional
+                or requirement.priority in {Priority.MAJOR_POOL, Priority.GEN_ED_FILL}
+            ),
+            key=lambda requirement: (
+                0 if requirement.optional else 1,
+                list(Priority).index(requirement.priority),
+                requirement.id,
+            ),
+        )
+        for requirement in ordered:
+            if credits_used + 1e-9 >= target:
+                break
+            resolution = resolve(
+                requirement,
+                snapshot,
+                exclude_codes=passed,
+                open_only=constraints.open_only,
+                current_term=self.current_term,
+            )
+            for section in sorted(
+                resolution.candidates, key=lambda item: self._rank(item, constraints)[0]
+            ):
+                if credits_used + 1e-9 >= target:
+                    break
+                if str(section.crn) in excluded_crns or section.code.upper() in excluded_courses:
+                    continue
+                if section.crn in by_crn or section.code in selected_codes:
+                    continue
+                credits = self._credits(section, constraints)
+                if not credits:
+                    continue
+                fits, reason, prereq_unverified = self._fits(
+                    section, selected, credits_used, constraints, passed
+                )
+                if not fits:
+                    continue
+                _, instructor, rating = self._rank(section, constraints)
+                state = availability_of(section, self.current_term)
+                selection = Selection(
+                    requirement_id=requirement.id,
+                    requirement=requirement.label,
+                    group=requirement.parent_group,
+                    crn=section.crn,
+                    course=section.code,
+                    section=section.section,
+                    title=section.title,
+                    instructor=instructor,
+                    rating=rating,
+                    times=section.time_label,
+                    days=section.day_label,
+                    credits=credits,
+                    seats=section.seats_available,
+                    open=section.open,
+                    availability=state.value,
+                    verify_at_registration=state is not Availability.OPEN,
+                    requires_arrangement=requirement.requires_arrangement,
+                    meets=[
+                        f"{m.day.value} {m.start.strftime('%H:%M')}-{m.end.strftime('%H:%M')} {m.location}".strip()
+                        for m in section.meetings
+                        if m.scheduled
+                    ],
+                    covers=[requirement.id],
+                    rationale=(
+                        f"fills the {target:g}-credit minimum load; "
+                        + self._rationale(requirement, section, instructor, rating, state)
+                    ),
+                    prereq_unverified=prereq_unverified,
+                )
+                plan.selections.append(selection)
+                by_crn[section.crn] = selection
+                selected_codes.add(section.code)
+                selected.append(section)
+                credits_used = round(credits_used + credits, 2)
+                if prereq_unverified:
+                    plan.warnings.append(
+                        f"{section.code} CRN {section.crn}: prerequisite could not be verified "
+                        f"({reason}); confirm before registering"
+                    )
+        plan.min_credits_met = credits_used + 1e-9 >= target
+        if not plan.min_credits_met:
+            plan.warnings.append(
+                f"minimum load not met: placed {credits_used:g} of {target:g} credits; "
+                "no additional eligible sections"
             )
 
     def _rationale(
@@ -741,15 +1394,32 @@ class Planner:
             )
         if plan.unplaced_requirements:
             lines.append(f"{len(plan.unplaced_requirements)} requirement(s) could not be placed")
+        if constraints.min_credits:
+            lines.append(
+                f"minimum load {plan.total_credits:g}/{constraints.min_credits:g} credits "
+                f"({'met' if plan.min_credits_met else 'NOT met'})"
+            )
+            if constraints.min_credits > constraints.max_credits + 1e-9:
+                lines.append(
+                    f"min_credits {constraints.min_credits:g} exceeds max_credits "
+                    f"{constraints.max_credits:g}; it cannot be met"
+                )
+        if plan.pinned:
+            placed = sum(1 for pin in plan.pinned if pin.outcome == "placed")
+            lines.append(f"{placed}/{len(plan.pinned)} pinned section(s) placed")
         return lines
 
     def roadmap(
         self,
         terms: Sequence[str],
         constraints: Constraints | None = None,
+        *,
+        include_summer: bool = False,
     ) -> Roadmap:
         """Run the draft term by term, carrying completed requirements forward."""
         constraints = constraints or Constraints()
+        if not include_summer:
+            terms = [term for term in terms if not term_label(term).startswith("Summer")]
         remaining = [requirement for requirement in self.requirements if not requirement.satisfied]
         progress: dict[str, float] = {
             requirement.id: requirement.applied_credits for requirement in self.requirements
@@ -794,7 +1464,13 @@ class Planner:
                         and requirement.attributes
                         and set(requirement.attributes) & set(section.attribute_codes)
                     )
-                    if not (matches_code or matches_attribute):
+                    matches_wildcard = bool(
+                        section
+                        and requirement.subject_wildcards
+                        and section.subject.upper()
+                        in {wildcard.upper() for wildcard in requirement.subject_wildcards}
+                    )
+                    if not (matches_code or matches_attribute or matches_wildcard):
                         continue
                     progress[requirement.id] = progress.get(requirement.id, 0.0) + (selection.credits or 0)
                     counts[requirement.id] = counts.get(requirement.id, 0) + 1
@@ -871,9 +1547,24 @@ def verify_draft(draft: DraftPlan, snapshot: TermSnapshot) -> list[str]:
             problems.append(f"CRN {selection.crn} ({selection.course}) is marked open with 0 seats")
     for conflict in find_conflicts([section.to_schedule_section() for section in sections]):
         problems.append(conflict.summary)
-    total = round(sum(section.credits or 0 for section in sections), 2)
+    total = round(
+        sum(
+            float(draft.credit_overrides.get(str(section.crn), section.planning_credits or 0.0))
+            for section in sections
+        ),
+        2,
+    )
     if abs(total - draft.total_credits) > 1e-6:
         problems.append(f"credit total mismatch: selections={total:g}, plan={draft.total_credits:g}")
+    for pin in draft.pinned:
+        if pin.outcome != "placed":
+            problems.append(
+                f"pinned {pin.kind} {pin.request!r} not placed ({pin.outcome}): {pin.reason}"
+            )
+    if draft.min_credits and not draft.min_credits_met:
+        problems.append(
+            f"minimum load not met: {draft.total_credits:g} of {draft.min_credits:g} credits"
+        )
     return problems
 
 
