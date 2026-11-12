@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flightplan.registration import (
+from eagle_flightplan.registration import (
     TIMEZONE,
     countdown,
     next_window,

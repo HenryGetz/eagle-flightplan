@@ -2,7 +2,7 @@
 
 These are *cooked* values: local wall-clock meeting times, numeric credits, flat
 instructor/attribute lists. The raw wire shapes live in
-:mod:`flightplan.banner.models` and are converted by
+:mod:`eagle_flightplan.banner.models` and are converted by
 :func:`Section.from_wire`.
 """
 
@@ -150,7 +150,7 @@ class Section(BaseModel):
 
     @classmethod
     def from_wire(cls, row) -> "Section":
-        """Convert an :class:`flightplan.banner.models.Section` wire row."""
+        """Convert an :class:`eagle_flightplan.banner.models.Section` wire row."""
         meetings: list[Meeting] = []
         for meeting_time in row.meeting_times:
             meetings.extend(meeting_time.to_meetings())

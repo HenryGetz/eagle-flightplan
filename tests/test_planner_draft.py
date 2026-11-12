@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime, time, timezone
 
 
-from flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
-from flightplan.banner.search import SnapshotMeta, TermSnapshot
-from flightplan.models import Instructor, Section, SectionAttribute
-from flightplan.planner import (
+from eagle_flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
+from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
+from eagle_flightplan.models import Instructor, Section, SectionAttribute
+from eagle_flightplan.planner import (
     Constraints,
     Planner,
     PrereqProvider,
@@ -16,7 +16,7 @@ from flightplan.planner import (
     RatingProvider,
     parse_prerequisites,
 )
-from flightplan.schedule import Meeting, Weekday, find_conflicts
+from eagle_flightplan.schedule import Meeting, Weekday, find_conflicts
 
 
 def section(
@@ -298,7 +298,7 @@ def test_avoid_days_and_window_constraints(tmp_path):
 
 
 def test_verify_draft_flags_conflicts_and_missing_crns(tmp_path):
-    from flightplan.planner import verify_draft
+    from eagle_flightplan.planner import verify_draft
 
     sections = [
         section("1", title="A", start="10:00", end="11:00"),

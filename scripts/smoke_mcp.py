@@ -3,7 +3,7 @@
 
     python scripts/smoke_mcp.py
 
-Launches ``python -m flightplan.mcp_server`` as a subprocess, lists the tool
+Launches ``python -m eagle_flightplan.mcp_server`` as a subprocess, lists the tool
 surface and calls six read-only tools. Prints real results and exits non-zero on
 any failure (server error, missing tool, empty data, or a failed tool payload).
 """
@@ -82,7 +82,7 @@ async def call(client: Client, name: str, arguments: dict) -> dict:
 async def run() -> int:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "flightplan.mcp_server"],
+        args=["-m", "eagle_flightplan.mcp_server"],
         cwd=str(REPO),
         env={"PYTHONPATH": str(REPO / "src")},
     )

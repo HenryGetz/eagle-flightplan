@@ -4,8 +4,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from flightplan.auth import SessionExpiredError
-from flightplan.banner.plan import (
+from eagle_flightplan.auth import SessionExpiredError
+from eagle_flightplan.banner.plan import (
     DuplicateCourseError,
     Plan,
     PlanAheadUnavailable,
@@ -13,7 +13,7 @@ from flightplan.banner.plan import (
     PlanNotFoundError,
     _extract_json_block,
 )
-from flightplan.banner.ssb import SSBClient
+from eagle_flightplan.banner.ssb import SSBClient
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BASE = "https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb"
@@ -245,12 +245,12 @@ def test_guest_page_still_raises_session_expired():
 
 
 def test_validate_sections_flags_hard_and_soft_issues():
-    from flightplan.banner.plan import validate_sections
-    from flightplan.models import Section
+    from eagle_flightplan.banner.plan import validate_sections
+    from eagle_flightplan.models import Section
 
     def sec(crn, code, day, start, end, *, seats=20, open_=True, credits=4.0):
-        from flightplan.models import Instructor
-        from flightplan.schedule import Meeting
+        from eagle_flightplan.models import Instructor
+        from eagle_flightplan.schedule import Meeting
 
         subject, number = code.split()
         return Section(
@@ -274,9 +274,9 @@ def test_validate_sections_flags_hard_and_soft_issues():
 
 
 def test_add_course_refuses_hard_blocker_without_http(monkeypatch):
-    from flightplan.banner.plan import Plan, PlanCourse, PlanWriteBlocked
-    from flightplan.models import Instructor, Section
-    from flightplan.schedule import Meeting
+    from eagle_flightplan.banner.plan import Plan, PlanCourse, PlanWriteBlocked
+    from eagle_flightplan.models import Instructor, Section
+    from eagle_flightplan.schedule import Meeting
 
     calls = {"n": 0}
 
@@ -304,7 +304,7 @@ def test_add_course_refuses_hard_blocker_without_http(monkeypatch):
         courses=[PlanCourse(id=1, subject="CYS", number="4245", crn="1", credits=4.0)],
     )
     monkeypatch.setattr(client, "select_plan", lambda *args, **kwargs: plan)
-    monkeypatch.setattr("flightplan.banner.search.load_snapshot", lambda term: _snapshot(existing_section, candidate))
+    monkeypatch.setattr("eagle_flightplan.banner.search.load_snapshot", lambda term: _snapshot(existing_section, candidate))
 
     with pytest.raises(PlanWriteBlocked):
         client.add_course(999, "202620", crn="2")
@@ -314,7 +314,7 @@ def test_add_course_refuses_hard_blocker_without_http(monkeypatch):
 def _snapshot(*sections):
     from datetime import datetime, timezone
 
-    from flightplan.banner.search import SnapshotMeta, TermSnapshot
+    from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
 
     return TermSnapshot(
         meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),

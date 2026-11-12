@@ -1,6 +1,6 @@
 from datetime import time
 
-from flightplan.schedule import (
+from eagle_flightplan.schedule import (
     Meeting,
     ScheduleSection,
     TimeGrid,
@@ -80,7 +80,7 @@ def test_time_grid_busy_merges_nothing_but_lists_meetings():
 
 
 def test_render_grid_checked_rejects_mismatched_crns():
-    from flightplan.schedule import render_grid_checked
+    from eagle_flightplan.schedule import render_grid_checked
 
     sections = build()[:2]
     assert render_grid_checked(sections, expected_crns={"22445", "22446"})

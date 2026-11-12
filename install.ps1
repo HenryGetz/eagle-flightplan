@@ -1,4 +1,4 @@
-# FlightPlan bootstrap (Windows PowerShell).
+# Eagle Flightplan bootstrap (Windows PowerShell).
 # If Windows blocks the script: Set-ExecutionPolicy -Scope Process Bypass
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -43,7 +43,7 @@ if (-not (Test-Path $venvPython)) {
     }
 }
 
-Write-Host "Installing FlightPlan ..."
+Write-Host "Installing Eagle Flightplan ..."
 & $venvPython -m pip install --quiet --upgrade pip | Out-Null
 & $venvPython -m pip install --quiet -e .
 if ($LASTEXITCODE -ne 0) {
@@ -51,5 +51,5 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-& $venvPython -m flightplan.cli setup @args
+& $venvPython -m eagle_flightplan.cli setup @args
 exit $LASTEXITCODE

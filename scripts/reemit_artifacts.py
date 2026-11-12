@@ -16,12 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rich.console import Console
 
-from flightplan.audit import AuditClient
-from flightplan.banner.plan import PlanClient
-from flightplan.catalog import applied_codes
-from flightplan.banner.search import load_snapshot
-from flightplan.planner import RatingProvider
-from flightplan.schedule import render_grid_checked
+from eagle_flightplan.audit import AuditClient
+from eagle_flightplan.banner.plan import PlanClient
+from eagle_flightplan.catalog import applied_codes
+from eagle_flightplan.banner.search import load_snapshot
+from eagle_flightplan.planner import RatingProvider
+from eagle_flightplan.schedule import render_grid_checked
 
 console = Console()
 CAPTURES = Path("captures")

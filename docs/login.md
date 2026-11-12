@@ -27,7 +27,7 @@ Entra tenant when unauthenticated, and loads the Degree Works dashboard when the
 browser already holds an Entra session. (WEB31 is the Ellucian "web31" screen
 route, not a per-student worksheet id — see `docs/audit.md`.)
 
-## Flow as driven by `flightplan.auth.login()`
+## Flow as driven by `eagle_flightplan.auth.login()`
 
 1. **Entry** — `GET .../registration/registerPostSignIn?mode=registration`.
 2. **Username** (`login.microsoftonline.com/.../saml2`) — `input[name='loginfmt']`
@@ -105,7 +105,7 @@ Password field values, TOTP codes, `Cookie`/`Authorization` headers, and
 ## API
 
 ```python
-from flightplan import auth
+from eagle_flightplan import auth
 
 auth.login(force=True)          # -> Path (state file); silent re-SAML when possible
 auth.load_state()               # -> dict (Playwright storage_state)
@@ -120,7 +120,7 @@ Exceptions: `AuthError`, `MFARequiredError` (MFA page reached but no code box �
 carries the selector/URL that failed), `SessionExpiredError` (no state file or
 the server answered with a login page).
 
-CLI: `<venv python> -m flightplan.cli login --force`.
+CLI: `<venv python> -m eagle_flightplan.cli login --force`.
 
 ## Automatic re-authentication (self-healing)
 
@@ -134,10 +134,10 @@ Every Banner/audit request that goes through the typed clients is wrapped by
    request **once**.
 
 A repeated failure raises `SessionExpiredError` with the manual command
-(the packaged `flightplan login --force` command); it never loops. Non-idempotent plan writes
+(the packaged `eagle-flightplan login --force` command); it never loops. Non-idempotent plan writes
 are never replayed, even after a successful re-login.
 
-Controls: `UNW_AUTO_LOGIN=0` disables healing (`flightplan advise --no-auto-login`
+Controls: `UNW_AUTO_LOGIN=0` disables healing (`eagle-flightplan advise --no-auto-login`
 also sets it), and a login failure surfaces the original error plus the manual
 command. Concurrent tool calls cannot start two browsers because the re-login
 holds a lock and re-checks validity inside it.

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flightplan.banner.search import SnapshotMeta, TermSnapshot
-from flightplan.models import Instructor, Section, SectionAttribute
-from flightplan.schedule import Meeting, Weekday
+from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
+from eagle_flightplan.models import Instructor, Section, SectionAttribute
+from eagle_flightplan.schedule import Meeting, Weekday
 
 
 def build_snapshot() -> TermSnapshot:
@@ -73,7 +73,7 @@ def test_snapshot_round_trips_through_json(tmp_path):
 
 
 def test_term_index_tracks_terms_and_courses(tmp_path):
-    from flightplan.banner.search import TermIndex
+    from eagle_flightplan.banner.search import TermIndex
 
     snapshot = build_snapshot()
     index = TermIndex(tmp_path / "index.sqlite")
@@ -88,7 +88,7 @@ def test_term_index_tracks_terms_and_courses(tmp_path):
 
 
 def test_snapshot_save_is_atomic_and_corrupt_cache_is_missing(tmp_path, monkeypatch):
-    from flightplan.banner import search
+    from eagle_flightplan.banner import search
 
     monkeypatch.setattr(search, "TERMS_DIR", tmp_path)
     monkeypatch.setattr(search, "TERM_INDEX_PATH", tmp_path / "index.sqlite")

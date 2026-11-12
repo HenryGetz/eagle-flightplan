@@ -1,4 +1,4 @@
-# FlightPlan
+# Eagle Flightplan
 
 **Course planning for the UNW Eagles.**
 
@@ -7,8 +7,8 @@ Northwestern – St. Paul. It signs in to UNW's Banner 9 Student Self-Service an
 Ellucian Degree Works audit with an Entra ID + TOTP login, reads the degree
 audit and course catalog, resolves remaining requirements against real sections,
 checks time conflicts, and builds term or multi-term plans using Rate My
-Professors ratings as a soft preference. The same domain layer is exposed as a
-`flightplan` CLI and a stdio MCP server for agent use.
+Professors ratings as a soft preference. The same domain layer is exposed as
+an `eagle-flightplan` CLI and a stdio MCP server for agent use.
 
 This is an independent project. It is not affiliated with, endorsed by, or
 supported by the University of Northwestern, Ellucian, or Rate My Professors.
@@ -31,16 +31,16 @@ supported by the University of Northwestern, Ellucian, or Rate My Professors.
 macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/HenryGetz/eagle-flightplan/main/bootstrap.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/HenryGetz/eagle-flightplan/main/bootstrap.ps1 | iex
 ```
 
-The bootstrap clones to `${FLIGHTPLAN_HOME:-$HOME/.flightplan}` (or the
+The bootstrap clones to `${EAGLE_FLIGHTPLAN_HOME:-$HOME/.eagle-flightplan}` (or the
 Windows equivalent), then runs the interactive installer. It attaches
 `/dev/tty` to the setup prompts when available. In automation or another context with no
 terminal, it refuses to start the interactive prompts and prints the checkout
@@ -50,15 +50,15 @@ dependencies and Playwright Chromium, writes `.env`, and optionally logs in.
 If you prefer a checkout:
 
 ```bash
-git clone https://github.com/HenryGetz/FlightPlan.git
-cd FlightPlan
+git clone https://github.com/HenryGetz/eagle-flightplan.git
+cd eagle-flightplan
 ./install.sh          # or: sh install.sh
 ```
 
-After setup (from the project folder; Windows uses `.venv\Scripts\flightplan.exe`):
+After setup (from the project folder; Windows uses `.venv\Scripts\eagle-flightplan.exe`):
 
 ```bash
-.venv/bin/flightplan advise --term 202620
+.venv/bin/eagle-flightplan advise --term 202620
 ```
 
 `advise` prints a shareable advising brief: remaining requirements, candidate
@@ -70,7 +70,7 @@ Non-interactive install (never logs in): pipe the password and provide the
 other credentials; `--no-login` still writes `.env`:
 
 ```bash
-printf '%s\n' "$UNW_PASS" | .venv/bin/flightplan setup --yes --no-login \
+printf '%s\n' "$UNW_PASS" | .venv/bin/eagle-flightplan setup --yes --no-login \
   --password-stdin --user "$UNW_USER" --totp-secret "$UNW_TOTP_SECRET"
 ```
 
@@ -101,7 +101,7 @@ roadmap, offering matrix) are available through the MCP server; see
 
 ## MCP server
 
-`flightplan-mcp` runs a stdio MCP server with 20 tools: session health, profile, audit,
+`eagle-flightplan-mcp` runs a stdio MCP server with 20 tools: session health, profile, audit,
 remaining requirements, terms, search, course detail, candidates, RMP ratings,
 conflicts, draft (with pins, minimum load and variable-credit hours), roadmap,
 offering matrix, term-scoped plan operations, a read-only registration preview
@@ -113,15 +113,15 @@ equal to the plan's exact name. A call without them returns
 `refused: true`, the intended effect and the current plan state, and performs no
 write. Successful writes return a before/after diff read back from Banner.
 
-Register it as a stdio server with an absolute path to `<repo>/.venv/bin/flightplan-mcp`
-(`<repo>\.venv\Scripts\flightplan-mcp.exe` on Windows). The shape is the same for
+Register it as a stdio server with an absolute path to `<repo>/.venv/bin/eagle-flightplan-mcp`
+(`<repo>\.venv\Scripts\eagle-flightplan-mcp.exe` on Windows). The shape is the same for
 omp, Claude Desktop and Cursor:
 
 ```json
 {
   "mcpServers": {
-    "flightplan": {
-      "command": "/ABSOLUTE/PATH/TO/FlightPlan/.venv/bin/flightplan-mcp",
+    "eagle-flightplan": {
+      "command": "/ABSOLUTE/PATH/TO/eagle-flightplan/.venv/bin/eagle-flightplan-mcp",
       "args": [],
       "env": {"PYTHONUNBUFFERED": "1"}
     }
@@ -130,7 +130,7 @@ omp, Claude Desktop and Cursor:
 ```
 
 Config locations: `~/.omp/agent/mcp.json` (omp), the Claude Desktop
-`claude_desktop_config.json`, and `~/.cursor/mcp.json` (Cursor). `flightplan setup --register-mcp` merges this entry into the clients it finds; it preserves
+`claude_desktop_config.json`, and `~/.cursor/mcp.json` (Cursor). `eagle-flightplan setup --register-mcp` merges this entry into the clients it finds; it preserves
 other servers and backs up before writing. Restart the client after registering.
 
 See [`docs/mcp.md`](docs/mcp.md) for the tool table, real request/response
@@ -157,9 +157,9 @@ examples, error contract and session-recovery procedure.
 - **The session state is a secret.** `.state/unw_state.json` is a replayable
   cookie jar for Banner, Entra ID and Degree Works. It is gitignored and must not
   be copied into tickets, chat or commits. Overwrite it with
-  `flightplan login --force` if exposed.
+  `eagle-flightplan login --force` if exposed.
 - **No registration writes by default.** The MCP server never registers; only
-  the explicit `flightplan snipe` command can submit, and only with `--live`
+  the explicit `eagle-flightplan snipe` command can submit, and only with `--live`
   plus `--i-understand` plus typing the exact term code on stdin. It is
   browser-driven, dry-run by default, never drops/withdraws, and has not been
   validated against a live registration window. `windows`/`watch` and the MCP
@@ -209,7 +209,7 @@ are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 | path | contents |
 | --- | --- |
-| `src/flightplan/` | Library: `auth`, `audit/`, `banner/`, `catalog`, `planner`, `schedule`, `rmp/`, `report`, `cli`, `mcp_server`. |
+| `src/eagle_flightplan/` | Library: `auth`, `audit/`, `banner/`, `catalog`, `planner`, `schedule`, `rmp/`, `report`, `cli`, `mcp_server`. |
 | `docs/` | Login, Banner API, audit, planning, RMP, MCP, porting and an index. |
 | `scripts/` | Login, probe, draft, advising artifacts, RMP probe and MCP smoke test. |
 | `tests/` | Offline pytest suite, hermetic MCP stdio test and scrubbed fixtures. |

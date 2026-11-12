@@ -1,4 +1,4 @@
-"""Configuration and on-disk layout for FlightPlan.
+"""Configuration and on-disk layout for Eagle Flightplan.
 
 All secrets live in ``.env`` at the repo root (mode 600, gitignored). Nothing in
 this module or its callers hardcodes credentials.
@@ -26,7 +26,7 @@ def resolve_project_root(
 
     Editable installs keep ``config.py`` under ``<repo>/src`` and are detected by
     the adjacent ``pyproject.toml``. A wheel lives under ``site-packages``; there
-    we prefer ``FLIGHTPLAN_HOME`` and fall back to the current directory, never to the
+    we prefer ``EAGLE_FLIGHTPLAN_HOME`` and fall back to the current directory, never to the
     interpreter's library directory.
     """
     path = Path(file_path) if file_path is not None else Path(__file__).resolve()
@@ -34,7 +34,7 @@ def resolve_project_root(
     if (package_root / "pyproject.toml").is_file():
         return package_root
     env = environ if environ is not None else os.environ
-    override = env.get("FLIGHTPLAN_HOME", "").strip()
+    override = env.get("EAGLE_FLIGHTPLAN_HOME", "").strip()
     if override:
         return Path(override).expanduser().resolve()
     current = Path(cwd) if cwd is not None else Path.cwd()
@@ -43,7 +43,7 @@ def resolve_project_root(
 
 def login_command() -> str:
     """The packaged CLI command that repairs a session (works in wheels too)."""
-    return f"{shlex.quote(sys.executable)} -m flightplan.cli login --force"
+    return f"{shlex.quote(sys.executable)} -m eagle_flightplan.cli login --force"
 
 
 REPO_ROOT = resolve_project_root()

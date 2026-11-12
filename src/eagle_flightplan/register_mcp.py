@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .config import REPO_ROOT
 
-SERVER_NAME = "flightplan"
+SERVER_NAME = "eagle-flightplan"
 CLIENTS = ("omp", "claude", "cursor", "all")
 
 
@@ -48,16 +48,16 @@ def server_entry(root: Path | None = None) -> dict:
     module entry point.
     """
     root = Path(root) if root is not None else REPO_ROOT
-    exe_name = "flightplan-mcp.exe" if os.name == "nt" else "flightplan-mcp"
+    exe_name = "eagle-flightplan-mcp.exe" if os.name == "nt" else "eagle-flightplan-mcp"
     script = root / ".venv" / ("Scripts" if os.name == "nt" else "bin") / exe_name
     if script.exists():
         command, args = str(script), []
     else:
-        which = shutil.which("flightplan-mcp")
+        which = shutil.which("eagle-flightplan-mcp")
         if which:
             command, args = which, []
         else:
-            command, args = sys.executable, ["-m", "flightplan.mcp_server"]
+            command, args = sys.executable, ["-m", "eagle_flightplan.mcp_server"]
     return {"command": command, "args": args, "env": {"PYTHONUNBUFFERED": "1"}}
 
 
@@ -135,7 +135,7 @@ def register_default_clients(root: Path | None = None) -> tuple[bool, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Register the FlightPlan MCP server")
+    parser = argparse.ArgumentParser(description="Register the Eagle Flightplan MCP server")
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--client", choices=CLIENTS, default="all")
     args = parser.parse_args(argv)

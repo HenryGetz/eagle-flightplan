@@ -1,13 +1,13 @@
 # Contributing
 
-Thanks for improving `FlightPlan`. This project automates a real student
+Thanks for improving `Eagle Flightplan`. This project automates a real student
 account, so safety and reproducibility matter more than feature volume.
 
 ## Setup
 
 ```bash
-git clone <repository-url> FlightPlan
-cd FlightPlan
+git clone <repository-url> eagle-flightplan
+cd eagle-flightplan
 
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev,cov]"
@@ -25,7 +25,7 @@ Run the checks before opening a pull request:
 ```bash
 .venv/bin/ruff check .
 .venv/bin/python -m pytest -q
-.venv/bin/python -m pytest --cov=flightplan --cov-report=term-missing
+.venv/bin/python -m pytest --cov=eagle_flightplan --cov-report=term-missing
 ```
 
 The default test suite is hermetic: no credentials, no browser, no network.
@@ -79,12 +79,12 @@ scrubbed fixtures and must stay network-free.
 
 ## Code layout and ownership
 
-- `src/flightplan/mcp_server.py` owns the MCP surface and the guarded plan
+- `src/eagle_flightplan/mcp_server.py` owns the MCP surface and the guarded plan
   writes. Plan-write tools must refuse without explicit confirmation and must
   return a before/after diff read back from Banner.
-- `src/flightplan/cli.py` owns command-line UX and its own confirmation flow.
-- `src/flightplan/report.py` builds the advising brief.
-- `src/flightplan/auth.py`, `banner/`, `audit/`, `catalog.py`, `planner.py`,
+- `src/eagle_flightplan/cli.py` owns command-line UX and its own confirmation flow.
+- `src/eagle_flightplan/report.py` builds the advising brief.
+- `src/eagle_flightplan/auth.py`, `banner/`, `audit/`, `catalog.py`, `planner.py`,
   `schedule.py` and `rmp/` are the domain layer. Keep interface changes small,
   keep them covered by tests, and update `docs/` when behaviour changes.
 - `tests/` is hermetic. Mock HTTP with `httpx.MockTransport`; never call a live

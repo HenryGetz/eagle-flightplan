@@ -15,5 +15,5 @@ Start with the question you need answered, then open that file.
 | [mcp.md](mcp.md) | How to register and use the stdio MCP server: tool table, examples, error contract and session recovery. |
 | [../README.md](../README.md) | Install, CLI commands, safety model, limitations and repository layout. |
 
-The entry points are `flightplan.cli` and `flightplan.mcp_server`; both sit
+The entry points are `eagle_flightplan.cli` and `eagle_flightplan.mcp_server`; both sit
 on the same domain layer (`auth`, `banner`, `audit`, `catalog`, `planner`, `report`).

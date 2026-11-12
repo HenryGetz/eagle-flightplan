@@ -1,5 +1,5 @@
 #!/bin/sh
-# FlightPlan bootstrap (macOS/Linux). POSIX sh only.
+# Eagle Flightplan bootstrap (macOS/Linux). POSIX sh only.
 set -eu
 cd "$(dirname "$0")"
 
@@ -29,11 +29,11 @@ if [ ! -x ".venv/bin/python" ]; then
     "$PYTHON" -m venv .venv
 fi
 
-echo "Installing FlightPlan …"
+echo "Installing Eagle Flightplan …"
 .venv/bin/python -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
 .venv/bin/python -m pip install --quiet -e . || {
     echo "Package install failed. Run: .venv/bin/python -m pip install -e ."
     exit 1
 }
 
-exec .venv/bin/python -m flightplan.cli setup "$@"
+exec .venv/bin/python -m eagle_flightplan.cli setup "$@"

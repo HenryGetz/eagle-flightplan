@@ -109,7 +109,7 @@ class Meeting(BaseModel):
 class ScheduleSection(BaseModel):
     """Minimal section shape the conflict engine needs.
 
-    Built either by hand (tests) or by :mod:`flightplan.banner.models` from a
+    Built either by hand (tests) or by :mod:`eagle_flightplan.banner.models` from a
     Banner search/section-detail payload.
     """
 

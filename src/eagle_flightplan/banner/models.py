@@ -105,7 +105,7 @@ class MeetingTime(BaseModel):
         return f"{building} {self.room}".strip()
 
     def to_meetings(self) -> list[Meeting]:
-        """Expand the day flags into one :class:`~flightplan.schedule.Meeting` per weekday."""
+        """Expand the day flags into one :class:`~eagle_flightplan.schedule.Meeting` per weekday."""
         if not self.days:
             return [
                 Meeting(

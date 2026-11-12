@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from flightplan import auth
-from flightplan.banner.ssb import SSBClient, SSBError
+from eagle_flightplan import auth
+from eagle_flightplan.banner.ssb import SSBClient, SSBError
 
 BASE = "https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb"
 TERMS = [{"code": "202620", "description": "Spring 2027"}]
@@ -111,7 +111,7 @@ def test_auto_login_disabled_raises_manual_fix(monkeypatch):
     client = make_client(handler)
     with pytest.raises(auth.SessionExpiredError) as excinfo:
         client.get_terms()
-    assert "-m flightplan.cli login --force" in str(excinfo.value)
+    assert "-m eagle_flightplan.cli login --force" in str(excinfo.value)
     assert calls["n"] == 1
     assert heals["n"] == 0
 
@@ -132,7 +132,7 @@ def test_login_failure_surfaces_original_error(monkeypatch):
         client.get_terms()
     message = str(excinfo.value)
     assert "MFA page changed" in message
-    assert "-m flightplan.cli login --force" in message
+    assert "-m eagle_flightplan.cli login --force" in message
     assert calls["n"] == 1
 
 

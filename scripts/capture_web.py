@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rich.console import Console
 
-from flightplan.auth import BROWSER_UA, load_state
-from flightplan.config import CAPTURES_DIR, STATE_PATH
+from eagle_flightplan.auth import BROWSER_UA, load_state
+from eagle_flightplan.config import CAPTURES_DIR, STATE_PATH
 
 HOST_HINTS = ("unw.edu", "unwsp.edu", "microsoftonline.com")
 

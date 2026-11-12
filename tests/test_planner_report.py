@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
-from flightplan.banner.search import SnapshotMeta, TermSnapshot
-from flightplan.models import Instructor, Section
-from flightplan.planner import PrereqProvider, RatingInfo, RatingProvider
-from flightplan.report import build_brief
-from flightplan.schedule import Meeting, Weekday
+from eagle_flightplan.audit.models import (
+    Audit,
+    CourseRef,
+    GroupKind,
+    RequirementBlock,
+    RequirementGroup,
+)
+from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
+from eagle_flightplan.models import Instructor, Section
+from eagle_flightplan.planner import PrereqProvider, RatingInfo, RatingProvider
+from eagle_flightplan.report import build_brief
+from eagle_flightplan.schedule import Meeting, Weekday
 
 
 def section(crn: str, *, instructor: str, credits: float = 4.0, start: str = "10:00", attributes: tuple[str, ...] = ()) -> Section:
-    from flightplan.models import SectionAttribute
+    from eagle_flightplan.models import SectionAttribute
 
     return Section(
         crn=crn, term="202620", subject="CYS", number="4245", section="01",
@@ -93,7 +99,7 @@ def test_brief_empty_requirement_explains_why(tmp_path, monkeypatch):
     def unexpected_load(term):
         raise AssertionError("empty caller snapshot must not be replaced by a cache lookup")
 
-    monkeypatch.setattr("flightplan.report.load_snapshot", unexpected_load)
+    monkeypatch.setattr("eagle_flightplan.report.load_snapshot", unexpected_load)
     audit = Audit(
         groups=[
             RequirementGroup(
@@ -130,7 +136,7 @@ def test_brief_roadmap_keeps_legitimately_empty_other_term_snapshots(tmp_path, m
         meta=SnapshotMeta(term="202710", fetched_at=datetime.now(timezone.utc)),
         sections=[],
     )
-    monkeypatch.setattr("flightplan.report.load_snapshot", lambda term: empty)
+    monkeypatch.setattr("eagle_flightplan.report.load_snapshot", lambda term: empty)
     brief = build_brief(
         "202620",
         audit=Audit(),

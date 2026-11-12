@@ -1,7 +1,7 @@
 """Banner 9 Student Self-Service client.
 
 All calls are plain HTTP against ``/StudentRegistrationSsb/ssb`` using the cookies
-captured by :mod:`flightplan.auth`. No browser is required after login.
+captured by :mod:`eagle_flightplan.auth`. No browser is required after login.
 
 Endpoint map (see ``docs/banner-api.md`` for the full table):
 
@@ -54,7 +54,7 @@ from .models import (
 
 SSBError = AuthError
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-logger = logging.getLogger("flightplan.ssb")
+logger = logging.getLogger("eagle_flightplan.ssb")
 
 MODE = Literal["search", "registration", "plan", "preReg"]
 

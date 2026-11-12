@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import typer
 from rich.console import Console
 
-from flightplan import auth
-from flightplan.config import get_settings
+from eagle_flightplan import auth
+from eagle_flightplan.config import get_settings
 
 app = typer.Typer(add_completion=False)
 console = Console()

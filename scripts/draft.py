@@ -20,11 +20,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from flightplan.audit import AuditClient
-from flightplan.banner.search import TermIndex, TermSnapshot, fetch_term, load_snapshot
-from flightplan.catalog import offering_matrix, render_matrix, requirements_from_audit, term_label
-from flightplan.banner.plan import PlanClient
-from flightplan.planner import Constraints, DraftPlan, Planner, Roadmap, verify_draft
+from eagle_flightplan.audit import AuditClient
+from eagle_flightplan.banner.search import TermIndex, TermSnapshot, fetch_term, load_snapshot
+from eagle_flightplan.catalog import offering_matrix, render_matrix, requirements_from_audit, term_label
+from eagle_flightplan.banner.plan import PlanClient
+from eagle_flightplan.planner import Constraints, DraftPlan, Planner, Roadmap, verify_draft
 
 app = typer.Typer(add_completion=False)
 console = Console()

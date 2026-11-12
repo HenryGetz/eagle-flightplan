@@ -1,4 +1,4 @@
-"""FlightPlan: UNW Banner 9 + Degree Works planning client."""
+"""Eagle Flightplan: UNW Banner 9 + Degree Works planning client."""
 
 from .auth import (
     AuthError,

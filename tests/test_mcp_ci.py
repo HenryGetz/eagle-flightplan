@@ -37,7 +37,7 @@ EXPECTED_TOOLS = {
 async def test_stdio_server_starts_without_network_or_credentials() -> None:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "flightplan.mcp_server"],
+        args=["-m", "eagle_flightplan.mcp_server"],
         cwd=str(ROOT),
         env={
             "PYTHONPATH": str(ROOT / "src"),

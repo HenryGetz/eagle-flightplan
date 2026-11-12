@@ -15,8 +15,8 @@ window is prose:
 The parser also handles "You may register from …", "Registration is closed",
 "You may not register at this time", multiple date pairs (first pair wins as the
 window, second as the end), and unknown text (`parse_status=unknown`, reason kept
-verbatim, no crash). `flightplan windows [--term CODE] [--json]` prints all terms;
-`flightplan watch --term CODE` polls and `--until-open` exits with code 10 the
+verbatim, no crash). `eagle-flightplan windows [--term CODE] [--json]` prints all terms;
+`eagle-flightplan watch --term CODE` polls and `--until-open` exits with code 10 the
 moment eligibility flips, so it can be chained.
 
 ## MCP surface
@@ -68,8 +68,8 @@ for registration" and the CRN input/Add button do not exist (`crn_selector=null`
 ## Snipe modes
 
 ```
-flightplan snipe --term 202620 --plan "Advisor Plan - Spring 2027" --mode window --dry-run
-flightplan snipe --term 202620 --crn 22449 --crn 23251 --mode seats --interval 60 --dry-run
+eagle-flightplan snipe --term 202620 --plan "Advisor Plan - Spring 2027" --mode window --dry-run
+eagle-flightplan snipe --term 202620 --crn 22449 --crn 23251 --mode seats --interval 60 --dry-run
 ```
 
 * **Targets first.** From a plan name (its CRNs, ordered by the planner's priority
@@ -90,7 +90,7 @@ flightplan snipe --term 202620 --crn 22449 --crn 23251 --mode seats --interval 6
   `captures/registration-<term>-<live|dry|probe>-<ts>.jsonl`. For each target it
   fills the CRN and clicks Add (stage). After all targets it clicks Save once
   (`SAVE_BUTTON_SELECTORS`). Selector candidates live in
-  `src/flightplan/snipe.py`; they are provisional until a real eligible run
+  `src/eagle_flightplan/snipe.py`; they are provisional until a real eligible run
   confirms them.
 * **dry-run (default)** fills every target CRN, clicks neither Add nor Save, and
   reports "would stage N CRN(s) and then click Save once". **`--probe`** only

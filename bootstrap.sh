@@ -1,10 +1,10 @@
 #!/bin/sh
 # One-command bootstrap: clone/update the repo, then run its installer.
-# Works when piped: curl -fsSL https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.sh | sh
+# Works when piped: curl -fsSL https://raw.githubusercontent.com/HenryGetz/eagle-flightplan/main/bootstrap.sh | sh
 set -eu
 
-REPO="${FLIGHTPLAN_REPO:-https://github.com/HenryGetz/FlightPlan.git}"
-DEST="${FLIGHTPLAN_HOME:-$HOME/.flightplan}"
+REPO="${EAGLE_FLIGHTPLAN_REPO:-https://github.com/HenryGetz/eagle-flightplan.git}"
+DEST="${EAGLE_FLIGHTPLAN_HOME:-$HOME/.eagle-flightplan}"
 
 if ! command -v git >/dev/null 2>&1; then
     echo "git is required. Install git, then run this command again." >&2
@@ -12,13 +12,13 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 if [ -d "$DEST/.git" ]; then
-    echo "Updating $DEST …"
+    echo "Updating Eagle Flightplan at $DEST …"
     git -C "$DEST" pull --ff-only
 elif [ -e "$DEST" ]; then
-    echo "$DEST exists but is not a git checkout; move it aside or set FLIGHTPLAN_HOME." >&2
+    echo "$DEST exists but is not a git checkout; move it aside or set EAGLE_FLIGHTPLAN_HOME." >&2
     exit 1
 else
-    echo "Cloning $REPO to $DEST …"
+    echo "Cloning Eagle Flightplan to $DEST …"
     git clone --depth 1 "$REPO" "$DEST"
 fi
 

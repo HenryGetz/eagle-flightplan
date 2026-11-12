@@ -14,12 +14,12 @@ defaults in place behind configuration where possible.
 | what | UNW value | where |
 | --- | --- | --- |
 | Entra tenant | `713d3c09-b1b4-46a6-93dc-cd6b86269ddd` | Not hardcoded. `auth.login()` follows the SP redirect, so the tenant is discovered from the SAML handshake. See `docs/login.md`. |
-| IdP host hints | `login.microsoftonline.com`, `msftauth`, `live.com`, `adfs` | `src/flightplan/auth.py` → `LOGIN_HINTS`, `_looks_like_login`, `_on_idp`. |
-| Username field | `input[name='loginfmt']`, `#i0116`, `input[type='email']` | `src/flightplan/auth.py` → `login()`. |
-| Password field | `input[name='passwd']`, `#i0118`, `input[type='password']` | `src/flightplan/auth.py` → `login()`. |
-| Submit button | `#idSIButton9`, submit inputs/buttons | `src/flightplan/auth.py` → `login()`. |
-| TOTP code page | `#idTxtBx_SAOTCC_OTC`, submit `#idSubmit_SAOTCC_Continue` | `src/flightplan/auth.py` → `_handle_mfa()`. |
-| "Stay signed in?" | `#idBtn_Back` (answered No) | `src/flightplan/auth.py` → `login()`. |
+| IdP host hints | `login.microsoftonline.com`, `msftauth`, `live.com`, `adfs` | `src/eagle_flightplan/auth.py` → `LOGIN_HINTS`, `_looks_like_login`, `_on_idp`. |
+| Username field | `input[name='loginfmt']`, `#i0116`, `input[type='email']` | `src/eagle_flightplan/auth.py` → `login()`. |
+| Password field | `input[name='passwd']`, `#i0118`, `input[type='password']` | `src/eagle_flightplan/auth.py` → `login()`. |
+| Submit button | `#idSIButton9`, submit inputs/buttons | `src/eagle_flightplan/auth.py` → `login()`. |
+| TOTP code page | `#idTxtBx_SAOTCC_OTC`, submit `#idSubmit_SAOTCC_Continue` | `src/eagle_flightplan/auth.py` → `_handle_mfa()`. |
+| "Stay signed in?" | `#idBtn_Back` (answered No) | `src/eagle_flightplan/auth.py` → `login()`. |
 | MFA fallback walk | authenticator-app → verification-code path | `_handle_mfa()` / `_wait_for_any()` selectors. |
 
 If your tenant uses a different identity provider (Okta, Shibboleth, ADFS
@@ -35,8 +35,8 @@ fallback cannot be automated by this driver.
 
 | what | UNW value | where |
 | --- | --- | --- |
-| SSB origin/base | `https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb` | `src/flightplan/config.py` → `DEFAULT_SSB_BASE`; override with `UNW_SSB_BASE`. `Settings.ssb_origin` derives the scheme+host. |
-| SSB endpoints | `/classSearch/getTerms`, `/term/search`, `/searchResults/searchResults`, `/searchResults/get*`, `/plan/*` | `src/flightplan/banner/ssb.py`, `banner/search.py`, `banner/plan.py`. |
+| SSB origin/base | `https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb` | `src/eagle_flightplan/config.py` → `DEFAULT_SSB_BASE`; override with `UNW_SSB_BASE`. `Settings.ssb_origin` derives the scheme+host. |
+| SSB endpoints | `/classSearch/getTerms`, `/term/search`, `/searchResults/searchResults`, `/searchResults/get*`, `/plan/*` | `src/eagle_flightplan/banner/ssb.py`, `banner/search.py`, `banner/plan.py`. |
 | Page/guest detection | `<meta name="fullName">` empty means guest | `auth.session_valid()`, `auth._looks_like_login()`. |
 | Term binding | `POST /term/search?mode=<search\|plan\|registration>` | `SSBClient.set_term()`. |
 | Plan list bootstrap | `window.bootstraps = { plans: [...] }` | `banner/plan.py` → `_extract_json_block()`. |
@@ -50,11 +50,11 @@ deployment may honour them but the snapshot approach still works.
 
 | what | UNW value | where |
 | --- | --- | --- |
-| Audit host | `https://degreeaudit.oci.unw.edu` | `src/flightplan/audit/client.py` → `AUDIT_ORIGIN`. This is a constant: `UNW_AUDIT_URL` only changes the browser landing page. |
-| Dashboard/screen URL | `https://degreeaudit.oci.unw.edu/worksheets/WEB31` | `src/flightplan/config.py` → `DEFAULT_AUDIT_URL` (`WEB31` is Ellucian's screen name, not a per-student id). |
+| Audit host | `https://degreeaudit.oci.unw.edu` | `src/eagle_flightplan/audit/client.py` → `AUDIT_ORIGIN`. This is a constant: `UNW_AUDIT_URL` only changes the browser landing page. |
+| Dashboard/screen URL | `https://degreeaudit.oci.unw.edu/worksheets/WEB31` | `src/eagle_flightplan/config.py` → `DEFAULT_AUDIT_URL` (`WEB31` is Ellucian's screen name, not a per-student id). |
 | Identity endpoint | `/api/students/myself` | `audit/client.py` → `MYSELF_PATH`. |
 | Audit endpoint | `/api/audit?studentId=…&school=…&degree=…&audit-type=AA…` | `audit/client.py` → `AUDIT_PATH`, `AuditClient.fetch()`. |
-| Worksheet node types | `4700` subset, `4600` group, `4200` course, `4900` complete/waiver | `src/flightplan/audit/parser.py` → `nodeType` branches. |
+| Worksheet node types | `4700` subset, `4600` group, `4200` course, `4900` complete/waiver | `src/eagle_flightplan/audit/parser.py` → `nodeType` branches. |
 | Top-level block kinds | `DEGREE`, `MAJOR`, `MINOR`, `OTHER` | `audit/parser.py` → `BLOCK_KIND`, `KIND_KEYWORDS`. |
 | Credit qualifiers | `CLASSESCREDITS`, `credits`/`applied`/`needed` | `audit/parser.py`; see `docs/audit.md`. |
 
@@ -78,8 +78,8 @@ adds one year for anything that is not Fall.
 
 | what | where |
 | --- | --- |
-| Season map and year-label rule | `src/flightplan/catalog.py` → `SEASON`, `term_season()`, `term_label()`. |
-| Chronological ordering | `src/flightplan/mcp_server.py` → `_term_key()`. |
+| Season map and year-label rule | `src/eagle_flightplan/catalog.py` → `SEASON`, `term_season()`, `term_label()`. |
+| Chronological ordering | `src/eagle_flightplan/mcp_server.py` → `_term_key()`. |
 | Roadmap sequence | `mcp_server._term_sequence()`, `_next_summer()`. |
 | "Current" term used for availability/registration | `mcp_server.CURRENT_TERM` (env `UNW_CURRENT_TERM`, default `202610`) and `report.CURRENT_TERM`. |
 | Legacy ordering tuple | `catalog.TERM_ORDER` (reference only; do not treat it as the full catalog). |
@@ -96,10 +96,10 @@ science, combined with a minimum-credit qualifier).
 
 | what | where |
 | --- | --- |
-| Parse `ATTRIBUTE = …` from option notes | `src/flightplan/catalog.py` → `ATTRIBUTE_IN_NOTES`, `_parse_attribute_codes()`. |
+| Parse `ATTRIBUTE = …` from option notes | `src/eagle_flightplan/catalog.py` → `ATTRIBUTE_IN_NOTES`, `_parse_attribute_codes()`. |
 | Turn worksheet blocks into targets | `catalog.requirements_from_audit()`. |
 | Resolve targets/attributes/wildcards to sections | `catalog.resolve()`. |
-| Attribute matching on sections | `Section.attribute_codes` in `src/flightplan/models.py`; `TermSnapshot.by_attribute()` in `banner/search.py`. |
+| Attribute matching on sections | `Section.attribute_codes` in `src/eagle_flightplan/models.py`; `TermSnapshot.by_attribute()` in `banner/search.py`. |
 | `LABS` special case | `catalog.requirements_from_audit()` (`all_of = ["LABS"]`). |
 | Credit-pool wording | `CREDITS_IN_NOTES`, `RequirementBlock.notes` (`"choose N credits from the following"`). |
 
@@ -111,7 +111,7 @@ free-text conditions in `notes` rather than inventing predicates.
 
 | what | UNW value | where |
 | --- | --- | --- |
-| School id | `706` | `src/flightplan/rmp/match.py` → `DEFAULT_SCHOOL_ID`; `src/flightplan/rmp/client.py` → `DEFAULT_SCHOOL_ID`. |
+| School id | `706` | `src/eagle_flightplan/rmp/match.py` → `DEFAULT_SCHOOL_ID`; `src/eagle_flightplan/rmp/client.py` → `DEFAULT_SCHOOL_ID`. |
 | School GraphQL id | `base64("School-706")` | `rmp/client.py` → `encode_global_id()`. |
 | Name search | `TeacherSearchResultsPageQuery` with nested `query.schoolID` | `rmp/client.py` → `search_professors()`, `rmp/queries.py`. |
 | Matching heuristics | nicknames, suffixes, surname/initial rules | `rmp/match.py`. |

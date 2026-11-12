@@ -8,8 +8,8 @@ import sys
 
 import pytest
 
-from flightplan import setup_cmd
-from flightplan.setup_cmd import (
+from eagle_flightplan import setup_cmd
+from eagle_flightplan.setup_cmd import (
     Services,
     SetupError,
     SetupOptions,

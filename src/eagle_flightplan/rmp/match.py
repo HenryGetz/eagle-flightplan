@@ -290,7 +290,7 @@ def match_professor(
     """Search RMP and return a conservative best match.
 
     ``client`` is injectable for tests; by default a short-lived
-    :class:`~flightplan.rmp.client.RMPClient` is created.
+    :class:`~eagle_flightplan.rmp.client.RMPClient` is created.
     """
     owns_client = client is None
     if client is None:

@@ -13,13 +13,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from flightplan.rmp.client import _parse_professor  # noqa: E402
-from flightplan.rmp.match import (  # noqa: E402
+from eagle_flightplan.rmp.client import _parse_professor  # noqa: E402
+from eagle_flightplan.rmp.match import (  # noqa: E402
     match_professor,
     normalize_name,
     rank_candidates,
 )
-from flightplan.rmp.models import Professor  # noqa: E402
+from eagle_flightplan.rmp.models import Professor  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "rmp"
 

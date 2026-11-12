@@ -4,8 +4,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from flightplan.auth import SessionExpiredError
-from flightplan.banner.ssb import SSBClient, TermNotSelectedError
+from eagle_flightplan.auth import SessionExpiredError
+from eagle_flightplan.banner.ssb import SSBClient, TermNotSelectedError
 
 BASE = "https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb"
 FIXTURES = Path(__file__).parent / "fixtures"

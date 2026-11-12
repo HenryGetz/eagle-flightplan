@@ -6,7 +6,7 @@ Usage:
     python scripts/rmp_probe.py --school 706 "Glenny" "J. Glenny"
     python scripts/rmp_probe.py --no-cache "Jackie Glenny"
 
-Run from the repository root (or with PYTHONPATH=src) so ``flightplan`` is
+Run from the repository root (or with PYTHONPATH=src) so ``eagle_flightplan`` is
 importable.
 """
 
@@ -21,9 +21,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from flightplan.rmp.client import RMPClient, RMPError  # noqa: E402
-from flightplan.rmp.match import match_professor  # noqa: E402
-from flightplan.rmp.models import Match, Professor  # noqa: E402
+from eagle_flightplan.rmp.client import RMPClient, RMPError  # noqa: E402
+from eagle_flightplan.rmp.match import match_professor  # noqa: E402
+from eagle_flightplan.rmp.models import Match, Professor  # noqa: E402
 
 
 def professor_payload(professor: Professor | None) -> dict | None:

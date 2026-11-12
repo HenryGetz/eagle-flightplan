@@ -65,7 +65,7 @@ AUTO_LOGIN_ENV = "UNW_AUTO_LOGIN"
 _LOGIN_LOCK = threading.Lock()
 _LAST_LOGIN_AT: float | None = None
 LOGIN_COOLDOWN_SECONDS = 5.0
-logger = logging.getLogger("flightplan.auth")
+logger = logging.getLogger("eagle_flightplan.auth")
 
 
 class AuthError(RuntimeError):

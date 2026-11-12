@@ -3,12 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "flightplan"
+name = "eagle-flightplan"
 version = "0.1.0"
-description = "FlightPlan — course planning for UNW Eagles (Banner 9 + Degree Works)"
+description = "Eagle Flightplan — course planning for UNW Eagles (Banner 9 + Degree Works)"
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "FlightPlan contributors" }]
+authors = [{ name = "Eagle Flightplan contributors" }]
 requires-python = ">=3.11"
 keywords = ["unw", "banner", "degree-works", "course-planning", "mcp"]
 classifiers = [
@@ -38,16 +38,16 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
 cov = ["pytest-cov>=5"]
 
 [project.urls]
-Homepage = "https://github.com/HenryGetz/FlightPlan"
-Repository = "https://github.com/HenryGetz/FlightPlan"
-Issues = "https://github.com/HenryGetz/FlightPlan/issues"
+Homepage = "https://github.com/HenryGetz/eagle-flightplan"
+Repository = "https://github.com/HenryGetz/eagle-flightplan"
+Issues = "https://github.com/HenryGetz/eagle-flightplan/issues"
 
 [project.scripts]
-flightplan = "flightplan.cli:app"
-flightplan-mcp = "flightplan.mcp_server:main"
+eagle-flightplan = "eagle_flightplan.cli:app"
+eagle-flightplan-mcp = "eagle_flightplan.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/flightplan"]
+packages = ["src/eagle_flightplan"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -73,32 +73,32 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 "scripts/reemit_artifacts.py" = ["E501", "I001", "RUF100"]
 "scripts/smoke_mcp.py" = ["RUF100"]
 # Frozen authentication layer; another workstream owns it this turn.
-"src/flightplan/auth.py" = ["E501", "RUF005", "RUF100", "SIM103", "UP035"]
+"src/eagle_flightplan/auth.py" = ["E501", "RUF005", "RUF100", "SIM103", "UP035"]
 # Frozen domain layer: line/import modernization is deferred to its owners.
-"src/flightplan/audit/client.py" = ["E501"]
-"src/flightplan/audit/models.py" = ["E501", "I001", "UP037", "UP042"]
-"src/flightplan/audit/parser.py" = ["E501", "UP035"]
-"src/flightplan/banner/models.py" = ["E501", "UP037"]
-"src/flightplan/banner/plan.py" = ["E501", "I001", "RUF005", "SIM102", "UP037"]
-"src/flightplan/banner/search.py" = ["E501", "RUF100", "UP017", "UP037"]
-"src/flightplan/banner/ssb.py" = ["E501", "UP035"]
-"src/flightplan/catalog.py" = ["E501", "RUF001", "SIM103", "UP035", "UP037", "UP042"]
-"src/flightplan/models.py" = ["E501", "UP037"]
-"src/flightplan/planner.py" = ["E501", "I001", "RUF001", "RUF059", "RUF100", "UP035"]
-"src/flightplan/schedule.py" = ["E501", "RUF100", "UP035", "UP037", "UP042"]
+"src/eagle_flightplan/audit/client.py" = ["E501"]
+"src/eagle_flightplan/audit/models.py" = ["E501", "I001", "UP037", "UP042"]
+"src/eagle_flightplan/audit/parser.py" = ["E501", "UP035"]
+"src/eagle_flightplan/banner/models.py" = ["E501", "UP037"]
+"src/eagle_flightplan/banner/plan.py" = ["E501", "I001", "RUF005", "SIM102", "UP037"]
+"src/eagle_flightplan/banner/search.py" = ["E501", "RUF100", "UP017", "UP037"]
+"src/eagle_flightplan/banner/ssb.py" = ["E501", "UP035"]
+"src/eagle_flightplan/catalog.py" = ["E501", "RUF001", "SIM103", "UP035", "UP037", "UP042"]
+"src/eagle_flightplan/models.py" = ["E501", "UP037"]
+"src/eagle_flightplan/planner.py" = ["E501", "I001", "RUF001", "RUF059", "RUF100", "UP035"]
+"src/eagle_flightplan/schedule.py" = ["E501", "RUF100", "UP035", "UP037", "UP042"]
 # RMP client is frozen domain code; its protocol constants stay as captured.
-"src/flightplan/rmp/__init__.py" = ["I001"]
-"src/flightplan/rmp/cache.py" = ["UP035", "UP037"]
-"src/flightplan/rmp/client.py" = ["I001", "UP035", "UP037"]
-"src/flightplan/rmp/match.py" = ["UP035"]
-"src/flightplan/rmp/models.py" = ["UP017", "UP037"]
-"src/flightplan/rmp/queries.py" = ["E501"]
+"src/eagle_flightplan/rmp/__init__.py" = ["I001"]
+"src/eagle_flightplan/rmp/cache.py" = ["UP035", "UP037"]
+"src/eagle_flightplan/rmp/client.py" = ["I001", "UP035", "UP037"]
+"src/eagle_flightplan/rmp/match.py" = ["UP035"]
+"src/eagle_flightplan/rmp/models.py" = ["UP017", "UP037"]
+"src/eagle_flightplan/rmp/queries.py" = ["E501"]
 # CLI/report/setup/registration are another workstream's files this turn.
-"src/flightplan/registration.py" = ["E501", "UP035"]
-"src/flightplan/setup_cmd.py" = ["E501", "RUF059", "RUF100", "SIM105", "UP035"]
-"src/flightplan/snipe.py" = ["E501", "I001", "RUF100", "UP035"]
-"src/flightplan/cli.py" = ["B008", "E501", "I001", "RUF100", "SIM102"]
-"src/flightplan/report.py" = ["E501", "RUF001", "RUF005", "UP034", "UP035"]
+"src/eagle_flightplan/registration.py" = ["E501", "UP035"]
+"src/eagle_flightplan/setup_cmd.py" = ["E501", "RUF059", "RUF100", "SIM105", "UP035"]
+"src/eagle_flightplan/snipe.py" = ["E501", "I001", "RUF100", "UP035"]
+"src/eagle_flightplan/cli.py" = ["B008", "E501", "I001", "RUF100", "SIM102"]
+"src/eagle_flightplan/report.py" = ["E501", "RUF001", "RUF005", "UP034", "UP035"]
 # Pre-existing tests owned elsewhere; new MCP tests are lint-clean without ignores.
 "tests/test_banner_models.py" = ["E501", "I001", "UP017"]
 "tests/test_banner_plan.py" = ["B017", "E501", "UP017"]
@@ -117,8 +117,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
 "tests/test_registration_snipe.py" = ["B017", "E501", "UP017"]
 
 [tool.coverage.run]
-source = ["flightplan"]
-omit = ["src/flightplan/__main__.py"]
+source = ["eagle_flightplan"]
+omit = ["src/eagle_flightplan/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true

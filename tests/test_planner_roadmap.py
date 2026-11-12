@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flightplan.audit.models import (
+from eagle_flightplan.audit.models import (
     Audit,
     CourseRef,
     GroupKind,
     RequirementBlock,
     RequirementGroup,
 )
-from flightplan.banner.search import SnapshotMeta, TermSnapshot
-from flightplan.models import Instructor, Section, SectionAttribute
-from flightplan.planner import Constraints, Planner, PrereqProvider, RatingInfo, RatingProvider
-from flightplan.schedule import Meeting, Weekday
+from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
+from eagle_flightplan.models import Instructor, Section, SectionAttribute
+from eagle_flightplan.planner import (
+    Constraints,
+    Planner,
+    PrereqProvider,
+    RatingInfo,
+    RatingProvider,
+)
+from eagle_flightplan.schedule import Meeting, Weekday
 
 
 def section(

@@ -9,7 +9,7 @@ No registration add/drop/register/withdraw POST was ever sent.
 ## Session, headers, cookies
 
 Required headers on every XHR (all replayed automatically by
-`flightplan.auth.SSB_HEADERS`):
+`eagle_flightplan.auth.SSB_HEADERS`):
 
 ```
 Accept: application/json, text/javascript, */*; q=0.01
@@ -138,7 +138,7 @@ Seat fields: `seatsAvailable` / `maximumEnrollment` / `enrollment`,
 Instructor: `faculty[].displayName`, `faculty[].emailAddress`,
 `faculty[].primaryIndicator`. Meeting times: `meetingsFaculty[].meetingTime`.
 
-### Meeting-time representation (used by `flightplan.schedule`)
+### Meeting-time representation (used by `eagle_flightplan.schedule`)
 
 * `beginTime` / `endTime` are **`HHMM` 24-hour strings in campus-local wall
   clock** (`"1245"` = 12:45 PM, `"0800"` = 8:00 AM). No timezone is attached.
@@ -292,7 +292,7 @@ POST /plan/delete             delete=2
   -> {"success":true,"message":"Plan successfully deleted."}
 ```
 
-`src/flightplan/banner/plan.py` implements exactly this sequence and was run
+`src/eagle_flightplan/banner/plan.py` implements exactly this sequence and was run
 end-to-end against the live account (plan created, CRN 22445 added, read back,
 duplicate rejected locally, removed, plan deleted; the student's other plans were
 never touched — there were none).
@@ -344,7 +344,7 @@ Consequences, stated plainly:
 * No separate validate endpoint is proven. The add response carries per-CRN
   `success`/`message`/`crnErrors`; because the planner is fully mapped, the safe
   substitute is: resolve sections via the planner/search endpoints and run
-  `flightplan.schedule.find_conflicts()` locally — it uses the same meeting-time
+  `eagle_flightplan.schedule.find_conflicts()` locally — it uses the same meeting-time
   data the registration engine uses and handles the linked lecture/lab exemption.
 
 Endpoints visible in the registration markup:
@@ -378,13 +378,13 @@ cookies with no browser and successfully calls `getTerms`, binds term `202620`,
 runs a CYS 2081 class search (2 sections, seats/days/times/instructors), and
 lists planner plans.
 
-## Schedule conflict engine (`flightplan.schedule`)
+## Schedule conflict engine (`eagle_flightplan.schedule`)
 
 Pure, no I/O; fed by `Section.to_schedule_section()` /
 `SectionDetail.to_schedule_section()`.
 
 ```python
-from flightplan.schedule import find_conflicts, render_grid, free_blocks, conflict_summary
+from eagle_flightplan.schedule import find_conflicts, render_grid, free_blocks, conflict_summary
 
 sections = [section.to_schedule_section() for section in page.sections]
 conflict_summary(find_conflicts(sections))      # "" conflicts -> "No conflicts."

@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
-from flightplan.banner.plan import Plan, PlanCourse
-from flightplan.banner.search import SnapshotMeta, TermSnapshot
-from flightplan.models import Instructor, Section
-from flightplan.schedule import Meeting
-from flightplan.snipe import (
+from eagle_flightplan.audit.models import (
+    Audit,
+    CourseRef,
+    GroupKind,
+    RequirementBlock,
+    RequirementGroup,
+)
+from eagle_flightplan.banner.plan import Plan, PlanCourse
+from eagle_flightplan.banner.search import SnapshotMeta, TermSnapshot
+from eagle_flightplan.models import Instructor, Section
+from eagle_flightplan.schedule import Meeting
+from eagle_flightplan.snipe import (
     SafetyError,
     Target,
     authorize_live,
@@ -73,7 +79,7 @@ def test_classify_outcome_phrases():
 
 
 def test_resolve_targets_from_plan_in_priority_order(monkeypatch):
-    monkeypatch.setattr("flightplan.snipe.load_snapshot", lambda term: snapshot(section("1", "CYS", "4245"), section("2", "MTH", "1000")))
+    monkeypatch.setattr("eagle_flightplan.snipe.load_snapshot", lambda term: snapshot(section("1", "CYS", "4245"), section("2", "MTH", "1000")))
     plan = Plan(
         id=1, name="Plan", term="202620",
         courses=[PlanCourse(id=1, subject="MTH", number="1000", crn="2", credits=3.0),
@@ -94,7 +100,7 @@ def test_resolve_targets_from_plan_in_priority_order(monkeypatch):
 
 
 def test_resolve_explicit_crn_and_unknown(monkeypatch):
-    monkeypatch.setattr("flightplan.snipe.load_snapshot", lambda term: snapshot(section("1", "CYS", "4245")))
+    monkeypatch.setattr("eagle_flightplan.snipe.load_snapshot", lambda term: snapshot(section("1", "CYS", "4245")))
     audit = Audit()
     targets = resolve_targets("202620", crns=["1"], audit=audit)
     assert [target.crn for target in targets] == ["1"]

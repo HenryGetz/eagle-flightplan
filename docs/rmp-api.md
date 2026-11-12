@@ -124,7 +124,7 @@ numRatings  117
 
 These strings are copied verbatim from the bundle (Relay-compiled fragments
 with generated suffixes). The same strings live in
-`src/flightplan/rmp/queries.py`; edit them only by re-extracting.
+`src/eagle_flightplan/rmp/queries.py`; edit them only by re-extracting.
 
 Variables:
 
@@ -1172,7 +1172,7 @@ query; use exact names and the cache.
 
 ## SQLite cache
 
-`src/flightplan/rmp/cache.py`
+`src/eagle_flightplan/rmp/cache.py`
 
 * Path: `.state/rmp.sqlite` (override with `RMP_CACHE_PATH`).
 * Creates `.state/` with `mkdir(parents=True, exist_ok=True)` and only ever

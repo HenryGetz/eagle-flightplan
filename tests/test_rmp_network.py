@@ -16,8 +16,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from flightplan.rmp.cache import SqliteCache  # noqa: E402
-from flightplan.rmp.client import RMPClient  # noqa: E402
+from eagle_flightplan.rmp.cache import SqliteCache  # noqa: E402
+from eagle_flightplan.rmp.client import RMPClient  # noqa: E402
 
 pytestmark = [
     pytest.mark.network,
