@@ -197,7 +197,8 @@ def build_brief(
     prereqs: PrereqProvider | None = None,
 ) -> Brief:
     audit = audit or AuditClient().audit()
-    snapshot = snapshot or load_snapshot(term)
+    if snapshot is None:
+        snapshot = load_snapshot(term)
     if snapshot is None:
         raise RuntimeError(f"No cached catalog snapshot for {term}; fetch it first.")
     ratings = ratings or RatingProvider()
@@ -352,10 +353,16 @@ def build_brief(
 
     if include_roadmap:
         terms = [term, "202710", "202720"]
+        roadmap_snapshots = {term: snapshot}
+        for candidate in terms:
+            if candidate == term:
+                continue
+            loaded = load_snapshot(candidate)
+            if loaded is not None:
+                roadmap_snapshots[candidate] = loaded
         planner_all = Planner(
             audit,
-            {candidate: snapshot for candidate in terms if candidate == term}
-            | {candidate: load_snapshot(candidate) for candidate in terms if candidate != term and load_snapshot(candidate)},
+            roadmap_snapshots,
             ratings=ratings,
             prereqs=prereqs,
             current_term=CURRENT_TERM,

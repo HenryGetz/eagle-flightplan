@@ -89,7 +89,11 @@ def test_brief_contains_all_sections_and_rejection_reason(tmp_path):
     assert brief.data["draft"]["total_credits"] == 4.0
 
 
-def test_brief_empty_requirement_explains_why(tmp_path):
+def test_brief_empty_requirement_explains_why(tmp_path, monkeypatch):
+    def unexpected_load(term):
+        raise AssertionError("empty caller snapshot must not be replaced by a cache lookup")
+
+    monkeypatch.setattr("unw_planner.report.load_snapshot", unexpected_load)
     audit = Audit(
         groups=[
             RequirementGroup(
@@ -119,3 +123,23 @@ def test_brief_empty_requirement_explains_why(tmp_path):
     )
     assert "no candidate sections" in brief.markdown
     assert "no offered section can satisfy it this term" in brief.markdown
+
+
+def test_brief_roadmap_keeps_legitimately_empty_other_term_snapshots(tmp_path, monkeypatch):
+    empty = TermSnapshot(
+        meta=SnapshotMeta(term="202710", fetched_at=datetime.now(timezone.utc)),
+        sections=[],
+    )
+    monkeypatch.setattr("unw_planner.report.load_snapshot", lambda term: empty)
+    brief = build_brief(
+        "202620",
+        audit=Audit(),
+        snapshot=TermSnapshot(
+            meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),
+            sections=[],
+        ),
+        include_roadmap=True,
+        ratings=RatingProvider(path=tmp_path / "r.json", lookup=lambda name: RatingInfo(name=name)),
+        prereqs=PrereqProvider(directory=tmp_path, fetcher=lambda sec: ""),
+    )
+    assert "## 7. Roadmap" in brief.markdown
