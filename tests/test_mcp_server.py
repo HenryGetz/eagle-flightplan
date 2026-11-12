@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from unw_planner import mcp_server
-from unw_planner.banner.plan import (
+from flightplan import mcp_server
+from flightplan.banner.plan import (
     Plan,
     PlanClient,
     PlanCourse,
@@ -18,11 +18,11 @@ from unw_planner.banner.plan import (
     PlanNotFoundError,
     PlanWriteBlocked,
 )
-from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-from unw_planner.banner.ssb import SSBClient, TermEligibility
-from unw_planner.models import Instructor, Section, SectionAttribute
-from unw_planner.planner import RatingInfo
-from unw_planner.schedule import Meeting, Weekday
+from flightplan.banner.search import SnapshotMeta, TermSnapshot
+from flightplan.banner.ssb import SSBClient, TermEligibility
+from flightplan.models import Instructor, Section, SectionAttribute
+from flightplan.planner import RatingInfo
+from flightplan.schedule import Meeting, Weekday
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -731,11 +731,11 @@ def test_ratings_refresh_is_forwarded(monkeypatch) -> None:
 
 
 def test_registration_window_is_read_only_and_parses_banner_text(monkeypatch) -> None:
-    from unw_planner.registration import parse_failures
+    from flightplan.registration import parse_failures
 
     class TermsClient:
         def get_terms(self):
-            from unw_planner.banner.models import Term
+            from flightplan.banner.models import Term
 
             return [
                 Term(code="202610", description="Fall 2026"),
@@ -746,7 +746,7 @@ def test_registration_window_is_read_only_and_parses_banner_text(monkeypatch) ->
     monkeypatch.setattr(mcp_server, "SSBClient", lambda client: fake)
     monkeypatch.setattr(mcp_server.auth, "ensure", lambda: object())
     monkeypatch.setattr(
-        "unw_planner.registration.window",
+        "flightplan.registration.window",
         lambda term, ssb=None: parse_failures(
             term,
             ["You can register from 04/20/2026 08:30 AM to 10/28/2026 11:59 PM"],
@@ -787,7 +787,7 @@ def test_plan_add_refuses_missing_prereq_before_any_post(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: add_target_snapshot())
     monkeypatch.setattr(mcp_server, "_passed_codes_or_none", lambda: set())
     monkeypatch.setattr(
-        "unw_planner.banner.search.load_snapshot", lambda term: add_target_snapshot()
+        "flightplan.banner.search.load_snapshot", lambda term: add_target_snapshot()
     )
 
     class BlockingPrereq:
@@ -797,7 +797,7 @@ def test_plan_add_refuses_missing_prereq_before_any_post(monkeypatch) -> None:
         def check(self, section, passed):
             return False, "needs COS 2099"
 
-    monkeypatch.setattr("unw_planner.planner.PrereqProvider", BlockingPrereq)
+    monkeypatch.setattr("flightplan.planner.PrereqProvider", BlockingPrereq)
 
     with pytest.raises(PlanWriteBlocked):
         mcp_server.plan_add_guarded("202620", "59021", True, crn="22449")
@@ -805,14 +805,14 @@ def test_plan_add_refuses_missing_prereq_before_any_post(monkeypatch) -> None:
 
 
 def test_summer_pass_carries_spring_prereq(monkeypatch) -> None:
-    from unw_planner.audit.models import (
+    from flightplan.audit.models import (
         Audit,
         CourseRef,
         GroupKind,
         RequirementBlock,
         RequirementGroup,
     )
-    from unw_planner.planner import Planner, PrereqProvider, RatingInfo, RatingProvider
+    from flightplan.planner import Planner, PrereqProvider, RatingInfo, RatingProvider
 
     audit = Audit(
         student_name="Test Student",
@@ -870,10 +870,12 @@ def test_summer_pass_carries_spring_prereq(monkeypatch) -> None:
         audit,
         snapshots,
         ratings=RatingProvider(
-            path="/tmp/unw-mcp-summer-ratings.json",
+            path="/tmp/flightplan-mcp-summer-ratings.json",
             lookup=lambda name: RatingInfo(name=name),
         ),
-        prereqs=PrereqProvider(directory="/tmp/unw-mcp-summer-prereq", fetcher=prereq_fetcher),
+        prereqs=PrereqProvider(
+            directory="/tmp/flightplan-mcp-summer-prereq", fetcher=prereq_fetcher
+        ),
         current_term="202620",
     )
     monkeypatch.setattr(
@@ -907,14 +909,14 @@ async def test_new_draft_and_rating_arguments_are_in_the_schema() -> None:
 
 
 def test_draft_payload_reports_failed_pin_as_ok_false(monkeypatch) -> None:
-    from unw_planner.audit.models import (
+    from flightplan.audit.models import (
         Audit,
         CourseRef,
         GroupKind,
         RequirementBlock,
         RequirementGroup,
     )
-    from unw_planner.planner import Planner, PrereqProvider, RatingInfo, RatingProvider
+    from flightplan.planner import Planner, PrereqProvider, RatingInfo, RatingProvider
 
     audit = Audit(
         student_name="Test Student",
@@ -953,10 +955,10 @@ def test_draft_payload_reports_failed_pin_as_ok_false(monkeypatch) -> None:
         audit,
         {"202620": snapshot},
         ratings=RatingProvider(
-            path="/tmp/unw-mcp-pin-ratings.json", lookup=lambda name: RatingInfo(name=name)
+            path="/tmp/flightplan-mcp-pin-ratings.json", lookup=lambda name: RatingInfo(name=name)
         ),
         prereqs=PrereqProvider(
-            directory="/tmp/unw-mcp-pin-prereq",
+            directory="/tmp/flightplan-mcp-pin-prereq",
             fetcher=lambda s: "No prerequisite information available.",
         ),
         current_term="202620",
@@ -973,7 +975,7 @@ def test_draft_payload_reports_failed_pin_as_ok_false(monkeypatch) -> None:
 
 
 def _audit_with_course(code: str, label: str = "Python"):
-    from unw_planner.audit.models import (
+    from flightplan.audit.models import (
         Audit,
         CourseRef,
         GroupKind,
@@ -1039,7 +1041,7 @@ def test_candidates_compact_and_limit_keep_default_shape(monkeypatch) -> None:
 
 
 def test_remaining_marks_shared_title_and_options(monkeypatch) -> None:
-    from unw_planner.audit.models import (
+    from flightplan.audit.models import (
         Audit,
         CourseRef,
         GroupKind,

@@ -35,7 +35,7 @@ All notable changes to this project are documented here. The format follows
 - `unw_banner_plan_add` runs the prerequisite gate with the student's applied
   courses before any Banner write.
 - `unw_search` caps `limit` at 200 and returns `limit_capped`/`next_offset`.
-- `import unw_planner.catalog` no longer fails with a circular import.
+- `import flightplan.catalog` no longer fails with a circular import.
 - **`snipe` is now stage-then-commit.** Banner's Add/CRN control only stages a
   pending row; Save commits it. `execute_targets` fills every target in dry-run
   (no clicks), stages each live target, then clicks Save exactly once. A missing
@@ -55,17 +55,20 @@ All notable changes to this project are documented here. The format follows
   entries; old processes can read new flat rows without a `ValidationError`.
 - `unw_session` reports `degraded`, `read_hint` and `write_hint`; a failed live
   check no longer orders an agent to stop read-only work. Repair hints use
-  `python -m unw_planner.cli login --force` (works in editable and wheel
+  `python -m flightplan.cli login --force` (works in editable and wheel
   installs) instead of `scripts/login.py`.
 - Setup: `--no-login` accepts a missing cached session as informational; a
   non-interactive run without `--password-stdin` fails with an actionable
   `SetupError`. `--register-mcp` now merges an omp/Claude/Cursor stdio entry with
   backup and idempotency instead of being a no-op.
-- Data root: `UNW_HOME` overrides non-editable installs; editable installs keep
+- Data root: `FLIGHTPLAN_HOME` overrides non-editable installs; editable installs keep
   the checkout. `ENV_PATH`, `.state`, `captures`, term/prereq caches and the MCP
   chdir all derive from the resolved root.
 - Release/install: bootstrap scripts, README badge/metadata, `.env.*` ignore,
-  wheel-install CI smoke and concrete MCP config examples.
+  wheel-install smoke and concrete MCP config examples.
+- Renamed the project to FlightPlan: package `flightplan`, entry points `flightplan` and
+  `flightplan-mcp`, MCP registration key `flightplan`, and data env
+  `FLIGHTPLAN_HOME`.
 - Agent UX: `unw_candidates` `compact`/`limit`/`open_only`; `grid_legend` on
   `unw_conflicts`/`unw_plan_draft`; `credits_semantics`/`part_of_term_note` on
   sections; `shared_title_with` on `unw_remaining`.
@@ -108,17 +111,17 @@ All notable changes to this project are documented here. The format follows
 - Rate My Professors GraphQL client with nickname-aware name matching, SQLite
   cache, conservative ambiguity handling, and explicit `null` for unrated
   faculty.
-- `unwplanner` CLI: setup wizard, login, terms, search, audit, plans, advising
+- `flightplan` CLI: setup wizard, login, terms, search, audit, plans, advising
   brief (`advise`), and explicit `plan-create` / `plan-add` / `plan-delete`
   writes.
-- 19-tool stdio MCP server (`unw-mcp`) covering session, profile, audit,
+- 19-tool stdio MCP server (`flightplan-mcp`) covering session, profile, audit,
   remaining requirements, terms, search, course detail, candidates, ratings,
   conflicts, draft, roadmap, offering matrix, term-scoped plan operations, and a
   read-only registration preview. Plan writes require `confirm=true`; delete
   additionally requires the exact plan name, and every write returns a
   before/after diff read back from Banner.
 - Offline test suite with scrubbed fixtures, a hermetic MCP stdio smoke test, a
-  curated Ruff configuration, coverage configuration, and Python 3.11/3.12 CI.
+  curated Ruff configuration, coverage configuration, and Python 3.11/3.12 support.
 
 ### Verified live
 

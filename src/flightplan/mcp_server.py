@@ -1,7 +1,7 @@
-"""UNW planner MCP server (stdio) and shared tool implementation.
+"""FlightPlan MCP server (stdio) and shared tool implementation.
 
-The module is both the MCP entry point (``unw-mcp`` / ``python -m
-unw_planner.mcp_server``) and the single implementation behind the CLI's read
+The module is both the MCP entry point (``flightplan-mcp`` / ``python -m
+flightplan.mcp_server``) and the single implementation behind the CLI's read
 commands. Every public ``*_payload`` function returns a JSON-serialisable dict
 whose ``ok`` key is ``True`` on success; failures are converted to
 ``{"ok": False, "error": ..., "hint": ...}`` by the MCP wrappers (the CLI calls
@@ -90,7 +90,7 @@ from .schedule import (
     render_grid,
 )
 
-SERVER_NAME = "unw-planner"
+SERVER_NAME = "flightplan"
 SERVER_VERSION = "0.1.0"
 
 #: The term the student is currently enrolled in (used to distinguish "closed"
@@ -100,13 +100,13 @@ CURRENT_TERM = os.environ.get("UNW_CURRENT_TERM", "202610")
 #: Exact command that repairs an expired/stale session in a fresh process.
 #: The packaged CLI works for editable and wheel installs alike.
 FIX_COMMAND = login_command()
-FIX_COMMAND_ALT = "unwplanner login --force"
+FIX_COMMAND_ALT = "flightplan login --force"
 
 # Keep per-request HTTP chatter off the operator's console; tool payloads carry
 # everything the agent needs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logger = logging.getLogger("unw_planner.mcp_server")
+logger = logging.getLogger("flightplan.mcp_server")
 
 _DAY_ALIASES = {
     "m": "Mon",
@@ -218,9 +218,9 @@ def _error(exc: Exception) -> dict[str, Any]:
     elif isinstance(exc, RMPError):
         hint = "Rate My Professors is optional: unknown ratings are null, not 0.0."
     elif isinstance(exc, FileNotFoundError):
-        hint = "A required local file is missing; run `unwplanner doctor`."
+        hint = "A required local file is missing; run `flightplan doctor`."
     elif isinstance(exc, httpx.HTTPError):
-        hint = "Network failure talking to UNW or RMP; retry once, then run `unwplanner doctor`."
+        hint = "Network failure talking to UNW or RMP; retry once, then run `flightplan doctor`."
     elif isinstance(exc, ValueError):
         hint = "Invalid argument; see the tool description for accepted values."
     return {"ok": False, "error": f"{kind}: {exc}", "error_type": kind, "hint": hint}
@@ -1478,7 +1478,7 @@ def offering_matrix_payload(
     observed = _observed_terms()
     if not observed:
         raise ValueError(
-            "No cached term snapshots. Run `unwplanner search --term <term>` once, "
+            "No cached term snapshots. Run `flightplan search --term <term>` once, "
             "or pass refresh=True to fetch every observed term."
         )
     snapshots: dict[str, TermSnapshot] = {}
@@ -2219,7 +2219,7 @@ def registration_window_payload(term: str | None = None) -> dict:
 # MCP server
 # --------------------------------------------------------------------------- #
 INSTRUCTIONS = """\
-UNW planner: Degree Works audit + Banner 9 class search + planning tools.
+FlightPlan: Degree Works audit + Banner 9 class search + planning tools.
 
 START HERE
 - Call unw_session() first. If authenticated=false, try one read tool
@@ -2669,7 +2669,7 @@ def _terms_payload_locked(refresh: bool) -> dict:
 
 
 def main() -> None:
-    """Run the stdio MCP server (console script ``unw-mcp``)."""
+    """Run the stdio MCP server (console script ``flightplan-mcp``)."""
     os.chdir(REPO_ROOT)
     mcp.run(transport="stdio")
 

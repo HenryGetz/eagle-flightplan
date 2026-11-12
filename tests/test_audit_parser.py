@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from unw_planner.audit.models import AuditParseError, GroupKind, RequirementStatus
-from unw_planner.audit.parser import parse_audit
+from flightplan.audit.models import AuditParseError, GroupKind, RequirementStatus
+from flightplan.audit.parser import parse_audit
 
 FIXTURE = Path(__file__).parent / "fixtures" / "audit_WEB31.json"
 
@@ -156,7 +156,7 @@ def _single_course_audit(grade: str) -> dict:
     ],
 )
 def test_non_credit_grades_never_earn_credit(grade, status):
-    from unw_planner.catalog import applied_codes, requirements_from_audit
+    from flightplan.catalog import applied_codes, requirements_from_audit
 
     audit = parse_audit(_single_course_audit(grade))
     option = audit.groups[0].blocks[0].options[0]
@@ -172,9 +172,9 @@ def test_non_credit_grades_never_earn_credit(grade, status):
 def test_failed_course_can_be_retaken():
     from datetime import datetime
 
-    from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-    from unw_planner.catalog import applied_codes, requirements_from_audit, resolve
-    from unw_planner.models import Instructor, Section
+    from flightplan.banner.search import SnapshotMeta, TermSnapshot
+    from flightplan.catalog import applied_codes, requirements_from_audit, resolve
+    from flightplan.models import Instructor, Section
 
     audit = parse_audit(_single_course_audit("F"))
     requirement = requirements_from_audit(audit)[0]

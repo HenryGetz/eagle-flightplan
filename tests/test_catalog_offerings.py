@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from unw_planner.audit.models import (
+from flightplan.audit.models import (
     Audit,
     CourseRef,
     GroupKind,
     RequirementBlock,
     RequirementGroup,
 )
-from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-from unw_planner.catalog import (
+from flightplan.banner.search import SnapshotMeta, TermSnapshot
+from flightplan.catalog import (
     CourseKey,
     OfferingPattern,
     Priority,
@@ -24,7 +24,7 @@ from unw_planner.catalog import (
     resolve,
     term_label,
 )
-from unw_planner.models import Instructor, Section, SectionAttribute
+from flightplan.models import Instructor, Section, SectionAttribute
 
 
 def section(

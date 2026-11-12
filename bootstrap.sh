@@ -1,10 +1,10 @@
 #!/bin/sh
 # One-command bootstrap: clone/update the repo, then run its installer.
-# Works when piped: curl -fsSL https://raw.githubusercontent.com/HenryGetz/unw-planner/main/bootstrap.sh | sh
+# Works when piped: curl -fsSL https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.sh | sh
 set -eu
 
-REPO="${UNW_PLANNER_REPO:-https://github.com/HenryGetz/unw-planner.git}"
-DEST="${UNW_PLANNER_HOME:-$HOME/.unw-planner}"
+REPO="${FLIGHTPLAN_REPO:-https://github.com/HenryGetz/FlightPlan.git}"
+DEST="${FLIGHTPLAN_HOME:-$HOME/.flightplan}"
 
 if ! command -v git >/dev/null 2>&1; then
     echo "git is required. Install git, then run this command again." >&2
@@ -15,7 +15,7 @@ if [ -d "$DEST/.git" ]; then
     echo "Updating $DEST …"
     git -C "$DEST" pull --ff-only
 elif [ -e "$DEST" ]; then
-    echo "$DEST exists but is not a git checkout; move it aside or set UNW_PLANNER_HOME." >&2
+    echo "$DEST exists but is not a git checkout; move it aside or set FLIGHTPLAN_HOME." >&2
     exit 1
 else
     echo "Cloning $REPO to $DEST …"

@@ -22,9 +22,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from unw_planner import auth
-from unw_planner.banner.plan import PlanClient
-from unw_planner.banner.ssb import SSBClient
+from flightplan import auth
+from flightplan.banner.plan import PlanClient
+from flightplan.banner.ssb import SSBClient
 
 app = typer.Typer(add_completion=False)
 console = Console()

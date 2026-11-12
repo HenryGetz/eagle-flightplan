@@ -27,7 +27,7 @@ Other API surface captured while loading the dashboard:
 `/api/validations/special-entities/{terms,block-types,audit-formats,audit-freeze-types,course-link-*}`,
 `/api/audit` (PDF/format variants), `/about`.
 
-## Payload shape → `unw_planner.audit.models`
+## Payload shape → `flightplan.audit.models`
 
 ```
 auditHeader              → Audit.student_name / student_id / gpa / raw_ref

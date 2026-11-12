@@ -1,4 +1,4 @@
-"""`unwplanner` command line: session, search, plans, audit and the advising brief."""
+"""`flightplan` command line: session, search, plans, audit and the advising brief."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .banner.plan import PlanClient, PlanWriteBlocked
 from .banner.ssb import SSBClient
 from .report import build_brief
 
-app = typer.Typer(add_completion=False, help="UNW Banner 9 planner client.")
+app = typer.Typer(add_completion=False, help="FlightPlan: course planning for UNW Eagles.")
 console = Console()
 
 
@@ -353,7 +353,7 @@ def plan_create(
 
 @app.command("plan-add")
 def plan_add(
-    plan_id: int = typer.Argument(..., help="Plan id (from `unwplanner plans`)."),
+    plan_id: int = typer.Argument(..., help="Plan id (from `flightplan plans`)."),
     term: str = typer.Option("202620", help="Term code."),
     crn: list[str] = typer.Option(..., "--crn", help="CRN to add (repeatable)."),
     yes: bool = typer.Option(False, "--yes", help="Skip the interactive confirmation."),

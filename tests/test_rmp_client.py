@@ -14,15 +14,15 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from unw_planner.rmp.cache import SqliteCache  # noqa: E402
-from unw_planner.rmp.client import (  # noqa: E402
+from flightplan.rmp.cache import SqliteCache  # noqa: E402
+from flightplan.rmp.client import (  # noqa: E402
     Blocked,
     GraphQLError,
     NotFound,
     RMPClient,
     RateLimited,
 )
-from unw_planner.rmp import queries  # noqa: E402
+from flightplan.rmp import queries  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "rmp"
 

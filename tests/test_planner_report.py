@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from unw_planner.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
-from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-from unw_planner.models import Instructor, Section
-from unw_planner.planner import PrereqProvider, RatingInfo, RatingProvider
-from unw_planner.report import build_brief
-from unw_planner.schedule import Meeting, Weekday
+from flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
+from flightplan.banner.search import SnapshotMeta, TermSnapshot
+from flightplan.models import Instructor, Section
+from flightplan.planner import PrereqProvider, RatingInfo, RatingProvider
+from flightplan.report import build_brief
+from flightplan.schedule import Meeting, Weekday
 
 
 def section(crn: str, *, instructor: str, credits: float = 4.0, start: str = "10:00", attributes: tuple[str, ...] = ()) -> Section:
-    from unw_planner.models import SectionAttribute
+    from flightplan.models import SectionAttribute
 
     return Section(
         crn=crn, term="202620", subject="CYS", number="4245", section="01",
@@ -93,7 +93,7 @@ def test_brief_empty_requirement_explains_why(tmp_path, monkeypatch):
     def unexpected_load(term):
         raise AssertionError("empty caller snapshot must not be replaced by a cache lookup")
 
-    monkeypatch.setattr("unw_planner.report.load_snapshot", unexpected_load)
+    monkeypatch.setattr("flightplan.report.load_snapshot", unexpected_load)
     audit = Audit(
         groups=[
             RequirementGroup(
@@ -130,7 +130,7 @@ def test_brief_roadmap_keeps_legitimately_empty_other_term_snapshots(tmp_path, m
         meta=SnapshotMeta(term="202710", fetched_at=datetime.now(timezone.utc)),
         sections=[],
     )
-    monkeypatch.setattr("unw_planner.report.load_snapshot", lambda term: empty)
+    monkeypatch.setattr("flightplan.report.load_snapshot", lambda term: empty)
     brief = build_brief(
         "202620",
         audit=Audit(),

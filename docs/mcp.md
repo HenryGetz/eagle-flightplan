@@ -1,17 +1,17 @@
-# UNW planner MCP server
+# FlightPlan MCP server
 
-`unw_planner.mcp_server` exposes the degree audit, Banner 9 class search, the
+`flightplan.mcp_server` exposes the degree audit, Banner 9 class search, the
 planning engine and the term-scoped Plan Ahead worksheets over MCP **stdio**.
-The `unwplanner` CLI and the MCP server share the same domain layer (`auth`,
+The `flightplan` CLI and the MCP server share the same domain layer (`auth`,
 `banner`, `audit`, `catalog`, `planner`, `report`); the MCP surface is the
 broader read-only API.
 
 | item | value |
 | --- | --- |
-| module | `<repo>/src/unw_planner/mcp_server.py` |
-| stdio entry point | `<repo>/.venv/bin/python -m unw_planner.mcp_server` |
-| console script | `<repo>/.venv/bin/unw-mcp` |
-| registration key | `unw-planner` in `~/.omp/agent/mcp.json` (also Claude Desktop / Cursor) |
+| module | `<repo>/src/flightplan/mcp_server.py` |
+| stdio entry point | `<repo>/.venv/bin/python -m flightplan.mcp_server` |
+| console script | `<repo>/.venv/bin/flightplan-mcp` |
+| registration key | `flightplan` in `~/.omp/agent/mcp.json` (also Claude Desktop / Cursor) |
 | transport | stdio only |
 | instructions | advertised in the MCP `initialize` result (60 lines) |
 
@@ -23,17 +23,17 @@ named and documented as writes.
 
 ## Client configuration
 
-`unwplanner setup --register-mcp` merges the entry below into omp
+`flightplan setup --register-mcp` merges the entry below into omp
 (`~/.omp/agent/mcp.json`), Claude Desktop (`claude_desktop_config.json`) and
 Cursor (`~/.cursor/mcp.json`) when they are present. It preserves other
 servers, backs up before writing, and is idempotent. Use the absolute path for
-your checkout/install (`...\\.venv\\Scripts\\unw-mcp.exe` on Windows):
+your checkout/install (`...\.venv\Scripts\flightplan-mcp.exe` on Windows):
 
 ```json
 {
   "mcpServers": {
-    "unw-planner": {
-      "command": "/ABSOLUTE/PATH/TO/unw-planner/.venv/bin/unw-mcp",
+    "flightplan": {
+      "command": "/ABSOLUTE/PATH/TO/FlightPlan/.venv/bin/flightplan-mcp",
       "args": [],
       "env": {"PYTHONUNBUFFERED": "1"}
     }
@@ -108,7 +108,7 @@ the numbers below as shape examples, not fixtures. Absolute paths are shown as `
  "earliest_cookie_expiry": "2026-11-21T18:37:55.974701+00:00",
  "read_hint": "try unw_profile/unw_terms once; read-only tools may still work",
  "write_hint": "run fix_command before any Banner plan write",
- "fix_command": "<venv python> -m unw_planner.cli login --force"}
+ "fix_command": "<venv python> -m flightplan.cli login --force"}
 ```
 
 ### `unw_profile`
@@ -464,7 +464,7 @@ hour even while polling.
    `fix_command`:
 
    ```bash
-   <venv python> -m unw_planner.cli login --force
+   <venv python> -m flightplan.cli login --force
    ```
 
    The packaged CLI drives Entra ID username → password → TOTP from `.env`
@@ -489,8 +489,8 @@ Never print `.env` values, cookie values, TOTP secrets or state-file contents.
 
 ```bash
 cd <repo>
-.venv/bin/unwplanner advise --term 202620
-.venv/bin/unwplanner search --term 202620 --subject CYS
+.venv/bin/flightplan advise --term 202620
+.venv/bin/flightplan search --term 202620 --subject CYS
 .venv/bin/python scripts/smoke_mcp.py
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .

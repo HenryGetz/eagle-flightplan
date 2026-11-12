@@ -1,10 +1,10 @@
 # One-command bootstrap for Windows: clone/update the repo, then run install.ps1.
-# irm https://raw.githubusercontent.com/HenryGetz/unw-planner/main/bootstrap.ps1 | iex
+# irm https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.ps1 | iex
 $ErrorActionPreference = "Stop"
 
-$Repo = if ($env:UNW_PLANNER_REPO) { $env:UNW_PLANNER_REPO } else { "https://github.com/HenryGetz/unw-planner.git" }
-$HomeDir = if ($env:UNW_PLANNER_HOME) { $env:UNW_PLANNER_HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-$Dest = if ($env:UNW_PLANNER_HOME) { $env:UNW_PLANNER_HOME } else { Join-Path $HomeDir ".unw-planner" }
+$Repo = if ($env:FLIGHTPLAN_REPO) { $env:FLIGHTPLAN_REPO } else { "https://github.com/HenryGetz/FlightPlan.git" }
+$HomeDir = if ($env:FLIGHTPLAN_HOME) { $env:FLIGHTPLAN_HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+$Dest = if ($env:FLIGHTPLAN_HOME) { $env:FLIGHTPLAN_HOME } else { Join-Path $HomeDir ".flightplan" }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "git is required. Install Git for Windows, then run this command again."
@@ -14,7 +14,7 @@ if (Test-Path (Join-Path $Dest ".git")) {
     Write-Host "Updating $Dest ..."
     git -C "$Dest" pull --ff-only
 } elseif (Test-Path $Dest) {
-    throw "$Dest exists but is not a git checkout; move it aside or set UNW_PLANNER_HOME."
+    throw "$Dest exists but is not a git checkout; move it aside or set FLIGHTPLAN_HOME."
 } else {
     Write-Host "Cloning $Repo to $Dest ..."
     git clone --depth 1 -- "$Repo" "$Dest"

@@ -10,7 +10,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from unw_planner.rmp.cache import SqliteCache, make_key  # noqa: E402
+from flightplan.rmp.cache import SqliteCache, make_key  # noqa: E402
 
 
 def test_set_get_roundtrip(tmp_path):

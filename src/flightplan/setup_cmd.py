@@ -1,6 +1,6 @@
 """Interactive setup wizard for non-coders (cross-platform, no bash required).
 
-`unwplanner setup` explains, installs, stores credentials in `.env` (mode 600),
+`flightplan setup` explains, installs, stores credentials in `.env` (mode 600),
 runs doctor checks, and optionally logs in. It is idempotent: re-running keeps an
 existing `.env` unless `--force`, and skips steps that are already done.
 """
@@ -176,7 +176,7 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 def write_env_file(path: Path, values: dict[str, str]) -> Path:
     lines = [
-        "# Written by `unwplanner setup`. NEVER commit this file.",
+        "# Written by `flightplan setup`. NEVER commit this file.",
         f"UNW_USER={values['UNW_USER']}",
         f"UNW_PASS={values['UNW_PASS']}",
         f"UNW_TOTP_SECRET={values['UNW_TOTP_SECRET']}",
@@ -230,7 +230,7 @@ def _venv_python(root: Path) -> Path:
 
 
 def _venv_cli(root: Path) -> Path:
-    name = "unwplanner.exe" if os.name == "nt" else "unwplanner"
+    name = "flightplan.exe" if os.name == "nt" else "flightplan"
     return _venv_python(root).parent / name
 
 
@@ -238,26 +238,26 @@ def _installed_mode(root: Path) -> bool:
     """True when setup runs from a wheel/installed package, not a checkout."""
     return (
         not (root / "pyproject.toml").exists()
-        and importlib.util.find_spec("unw_planner") is not None
+        and importlib.util.find_spec("flightplan") is not None
         and sys.prefix != sys.base_prefix
     )
 
 
 def _cli_command(root: Path, *, installed: bool) -> str:
     if installed:
-        return f"{shlex.quote(sys.executable)} -m unw_planner.cli"
+        return f"{shlex.quote(sys.executable)} -m flightplan.cli"
     return str(_venv_cli(root))
 
 
 def _importable(python: Path | None) -> bool:
     if python is not None and python.exists():
         result = subprocess.run(
-            [str(python), "-c", "import unw_planner"],
+            [str(python), "-c", "import flightplan"],
             capture_output=True,
             text=True,
         )
         return result.returncode == 0
-    return importlib.util.find_spec("unw_planner") is not None
+    return importlib.util.find_spec("flightplan") is not None
 
 
 def preflight(
@@ -288,7 +288,7 @@ def preflight(
         Check(
             name="Package importable",
             ok=_importable(python),
-            detail="unw_planner",
+            detail="flightplan",
         ),
         Check(
             name="Chromium (Playwright)",
@@ -321,7 +321,7 @@ def preflight(
                 detail=(
                     str(STATE_PATH)
                     if session_exists
-                    else "not required with --no-login; run `unwplanner login` before live tools"
+                    else "not required with --no-login; run `flightplan login` before live tools"
                 ),
             )
         )
@@ -347,7 +347,7 @@ def _install(root: Path, services: Services, io: WizardIO, *, installed: bool = 
                     f"`{sys.executable} -m venv .venv` in the project folder and re-run setup."
                 )
         if not _importable(python):
-            io.print("Installing the planner package (this can take a minute) …")
+            io.print("Installing FlightPlan (this can take a minute) …")
             code, output = services.run(
                 [str(python), "-m", "pip", "install", "-e", str(root)], root
             )
@@ -396,7 +396,7 @@ def _collect_credentials(options: SetupOptions, io: WizardIO, env_path: Path) ->
         if not sys.stdin.isatty():
             raise SetupError(
                 "No password available in a non-interactive shell. Next: pipe it with "
-                f"`{sys.executable} -m unw_planner.cli setup --yes --password-stdin "
+                f"`{sys.executable} -m flightplan.cli setup --yes --password-stdin "
                 "--user <email> --totp-secret <base32>` or run setup interactively."
             )
         password = io.getpass("UNW password (typing is hidden): ")
@@ -452,7 +452,7 @@ def run_setup(
     root.mkdir(parents=True, exist_ok=True)
     installed = _installed_mode(root)
     env_path = root / ".env"
-    io.print("UNW planner setup")
+    io.print("FlightPlan setup")
     io.print(f"Project folder: {root}")
     if installed:
         io.print(f"Installed mode: using {sys.executable}")
@@ -467,7 +467,7 @@ def run_setup(
         venv_python = _venv_python(root)
         io.print(
             "You are not inside the project virtual environment.\n"
-            f"Next: run `{venv_python} -m unw_planner.cli setup` "
+            f"Next: run `{venv_python} -m flightplan.cli setup` "
             "or use install.sh / install.ps1."
         )
         if not options.yes:

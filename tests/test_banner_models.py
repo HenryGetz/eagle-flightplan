@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from unw_planner.banner.models import SearchPage, Section, Term
-from unw_planner.schedule import Weekday
+from flightplan.banner.models import SearchPage, Section, Term
+from flightplan.schedule import Weekday
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -82,11 +82,11 @@ def test_section_detail_accepts_snapshot_section_and_uses_snapshot(monkeypatch):
 
     import httpx
 
-    from unw_planner.banner.models import SectionDetail
-    from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-    from unw_planner.banner.ssb import SSBClient
-    from unw_planner.models import Instructor, Section as SnapshotSection
-    from unw_planner.schedule import Meeting, Weekday
+    from flightplan.banner.models import SectionDetail
+    from flightplan.banner.search import SnapshotMeta, TermSnapshot
+    from flightplan.banner.ssb import SSBClient
+    from flightplan.models import Instructor, Section as SnapshotSection
+    from flightplan.schedule import Meeting, Weekday
 
     normalized = SnapshotSection(
         crn="999", term="202620", subject="CYS", number="4245", section="01",
@@ -105,7 +105,7 @@ def test_section_detail_accepts_snapshot_section_and_uses_snapshot(monkeypatch):
         meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),
         sections=[normalized],
     )
-    monkeypatch.setattr("unw_planner.banner.search.load_snapshot", lambda term: snapshot)
+    monkeypatch.setattr("flightplan.banner.search.load_snapshot", lambda term: snapshot)
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path.replace("/StudentRegistrationSsb/ssb", "")

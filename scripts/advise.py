@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import typer
 from rich.console import Console
 
-from unw_planner.audit import AuditClient
-from unw_planner.banner.search import TermSnapshot, load_snapshot
-from unw_planner.catalog import (
+from flightplan.audit import AuditClient
+from flightplan.banner.search import TermSnapshot, load_snapshot
+from flightplan.catalog import (
     Availability,
     Requirement,
     applied_codes,
@@ -29,7 +29,7 @@ from unw_planner.catalog import (
     resolve,
     term_label,
 )
-from unw_planner.planner import (
+from flightplan.planner import (
     Constraints,
     DraftPlan,
     Planner,
@@ -37,7 +37,7 @@ from unw_planner.planner import (
     RatingProvider,
     Selection,
 )
-from unw_planner.schedule import render_grid
+from flightplan.schedule import render_grid
 
 app = typer.Typer(add_completion=False)
 console = Console()

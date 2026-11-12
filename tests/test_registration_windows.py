@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from unw_planner.registration import (
+from flightplan.registration import (
     TIMEZONE,
     countdown,
     next_window,

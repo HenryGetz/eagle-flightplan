@@ -1,4 +1,4 @@
-# UNW planner bootstrap (Windows PowerShell).
+# FlightPlan bootstrap (Windows PowerShell).
 # If Windows blocks the script: Set-ExecutionPolicy -Scope Process Bypass
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -43,7 +43,7 @@ if (-not (Test-Path $venvPython)) {
     }
 }
 
-Write-Host "Installing the planner package ..."
+Write-Host "Installing FlightPlan ..."
 & $venvPython -m pip install --quiet --upgrade pip | Out-Null
 & $venvPython -m pip install --quiet -e .
 if ($LASTEXITCODE -ne 0) {
@@ -51,5 +51,5 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-& $venvPython -m unw_planner.cli setup @args
+& $venvPython -m flightplan.cli setup @args
 exit $LASTEXITCODE

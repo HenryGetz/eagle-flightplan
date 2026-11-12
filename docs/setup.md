@@ -1,4 +1,4 @@
-# Setting up the UNW planner (no coding needed)
+# Setting up FlightPlan (no coding needed)
 
 This page walks you through one command. It takes about five minutes the first
 time, mostly waiting for downloads.
@@ -20,25 +20,25 @@ The fastest path needs no manual download:
 **macOS / Linux**
 
 ```
-curl -fsSL https://raw.githubusercontent.com/HenryGetz/unw-planner/main/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```
-irm https://raw.githubusercontent.com/HenryGetz/unw-planner/main/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/HenryGetz/FlightPlan/main/bootstrap.ps1 | iex
 ```
 
-The bootstrap clones the project to `${UNW_PLANNER_HOME:-$HOME/.unw-planner}`,
+The bootstrap clones the project to `${FLIGHTPLAN_HOME:-$HOME/.flightplan}`,
 then runs the installer. It reads setup prompts from `/dev/tty` when one is
-available. With no terminal (CI/automation), it stops with an actionable message
+available. With no terminal (automation), it stops with an actionable message
 instead of looping on EOF; use the non-interactive command below. If you already
 downloaded/cloned the folder, use:
 
 **macOS / Linux**
 
 ```
-cd /path/to/unw-planner
+cd /path/to/FlightPlan
 sh install.sh
 ```
 
@@ -84,7 +84,7 @@ Doctor checks:
   ✓ Python version: 3.12.x
   ✓ Virtual environment: ...
   ✓ Project .venv: ...
-  ✓ Package importable: unw_planner
+  ✓ Package importable: flightplan
   ✓ Chromium (Playwright): headless browser
   ✓ Credentials file: .../.env
   ✓ Cached session: .../.state/unw_state.json
@@ -95,10 +95,10 @@ closes by itself while it signs in (about 20 seconds). When it finishes you will
 see **"Login complete."** and three suggested commands, starting with:
 
 ```
-.venv/bin/unwplanner advise --term 202620
+.venv/bin/flightplan advise --term 202620
 ```
 
-On Windows use `.venv\Scripts\unwplanner.exe`.
+On Windows use `.venv\Scripts\flightplan.exe`.
 
 That produces the advising brief described in `docs/planner.md`.
 
@@ -117,7 +117,7 @@ problem: re-copy the manual key from the security-info page (no spaces) and run
 the setup again with `--force` to replace the saved credentials:
 
 ```
-.venv/bin/python -m unw_planner.cli setup --force
+.venv/bin/python -m flightplan.cli setup --force
 ```
 
 (On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`.)
@@ -132,7 +132,7 @@ It is safe. Existing credentials are kept unless you pass `--force`; finished
 steps (browser download, package install) are skipped. For automation, pipe the password and provide the user/TOTP values:
 
 ```
-printf '%s\n' "$UNW_PASS" | .venv/bin/python -m unw_planner.cli setup \
+printf '%s\n' "$UNW_PASS" | .venv/bin/python -m flightplan.cli setup \
   --yes --no-login --password-stdin \
   --user "$UNW_USER" --totp-secret "$UNW_TOTP_SECRET"
 ```
@@ -140,7 +140,7 @@ printf '%s\n' "$UNW_PASS" | .venv/bin/python -m unw_planner.cli setup \
 `--no-login` still writes `.env`, so credentials are required. In a
 non-interactive shell without `--password-stdin`, setup stops with an actionable
 error instead of falling into `getpass`. After a no-login setup, run
-`.venv/bin/unwplanner login` before any live Banner tool.
+`.venv/bin/flightplan login` before any live Banner tool.
 
 Never share or commit the `.env` file: it holds your password and TOTP secret.
 The setup restricts its permissions automatically.

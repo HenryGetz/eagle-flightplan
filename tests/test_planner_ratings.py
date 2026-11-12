@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from unw_planner.planner import RatingInfo, RatingProvider
+from flightplan.planner import RatingInfo, RatingProvider
 
 
 def test_ttl_expires_and_refetches(tmp_path):
@@ -180,7 +180,7 @@ def test_writer_uses_flat_entries(tmp_path):
 
 
 def test_migration_backs_up_and_flattens_all_kept_entries(tmp_path):
-    from unw_planner.planner import migrate_ratings_file
+    from flightplan.planner import migrate_ratings_file
 
     path = tmp_path / "ratings.json"
     path.write_text(

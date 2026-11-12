@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from unw_planner.config import login_command, resolve_project_root
+from flightplan.config import login_command, resolve_project_root
 
 
 def _config_file(root: Path) -> Path:
-    package = root / "src" / "unw_planner"
+    package = root / "src" / "flightplan"
     package.mkdir(parents=True)
     path = package / "config.py"
     path.write_text("")
@@ -24,19 +24,19 @@ def test_editable_root_is_the_checkout(tmp_path):
 
 
 def test_wheel_root_uses_unw_home(tmp_path):
-    site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "unw_planner"
+    site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "flightplan"
     site.mkdir(parents=True)
     path = site / "config.py"
     path.write_text("")
     home = tmp_path / "data"
     assert (
-        resolve_project_root(file_path=path, environ={"UNW_HOME": str(home)}, cwd=tmp_path)
+        resolve_project_root(file_path=path, environ={"FLIGHTPLAN_HOME": str(home)}, cwd=tmp_path)
         == home
     )
 
 
 def test_wheel_root_falls_back_to_cwd(tmp_path):
-    site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "unw_planner"
+    site = tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "flightplan"
     site.mkdir(parents=True)
     path = site / "config.py"
     path.write_text("")
@@ -47,11 +47,11 @@ def test_wheel_root_falls_back_to_cwd(tmp_path):
 
 def test_login_command_is_packaged_cli():
     command = login_command()
-    assert "-m unw_planner.cli login --force" in command
+    assert "-m flightplan.cli login --force" in command
     assert "scripts/login.py" not in command
 
 
 def test_no_user_facing_hint_mentions_scripts_login():
-    source = Path(__file__).resolve().parents[1] / "src" / "unw_planner"
+    source = Path(__file__).resolve().parents[1] / "src" / "flightplan"
     for path in source.rglob("*.py"):
         assert "scripts/login.py" not in path.read_text(encoding="utf-8"), path

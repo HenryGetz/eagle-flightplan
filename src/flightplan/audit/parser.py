@@ -1,4 +1,4 @@
-"""Parse Ellucian Degree Works audit JSON into :mod:`unw_planner.audit.models`.
+"""Parse Ellucian Degree Works audit JSON into :mod:`flightplan.audit.models`.
 
 The audit app (``degreeaudit.oci.unw.edu``) is a React shell over a JSON API:
 

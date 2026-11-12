@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime, time, timezone
 
 
-from unw_planner.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
-from unw_planner.banner.search import SnapshotMeta, TermSnapshot
-from unw_planner.models import Instructor, Section, SectionAttribute
-from unw_planner.planner import (
+from flightplan.audit.models import Audit, CourseRef, GroupKind, RequirementBlock, RequirementGroup
+from flightplan.banner.search import SnapshotMeta, TermSnapshot
+from flightplan.models import Instructor, Section, SectionAttribute
+from flightplan.planner import (
     Constraints,
     Planner,
     PrereqProvider,
@@ -16,7 +16,7 @@ from unw_planner.planner import (
     RatingProvider,
     parse_prerequisites,
 )
-from unw_planner.schedule import Meeting, Weekday, find_conflicts
+from flightplan.schedule import Meeting, Weekday, find_conflicts
 
 
 def section(
@@ -298,7 +298,7 @@ def test_avoid_days_and_window_constraints(tmp_path):
 
 
 def test_verify_draft_flags_conflicts_and_missing_crns(tmp_path):
-    from unw_planner.planner import verify_draft
+    from flightplan.planner import verify_draft
 
     sections = [
         section("1", title="A", start="10:00", end="11:00"),

@@ -1,7 +1,7 @@
 from datetime import time
 
 
-from unw_planner.schedule import (
+from flightplan.schedule import (
     Meeting,
     ScheduleSection,
     Weekday,
@@ -123,7 +123,7 @@ def test_find_conflicts_is_deduplicated_and_ordered():
 
 
 def test_banner_time_parsing_variants():
-    from unw_planner.schedule import parse_banner_time
+    from flightplan.schedule import parse_banner_time
 
     assert parse_banner_time("1125") == time(11, 25)
     assert parse_banner_time("08:00") == time(8, 0)

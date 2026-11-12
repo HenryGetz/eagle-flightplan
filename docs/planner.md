@@ -11,7 +11,7 @@ RMP ratings (cached) ──► RatingInfo                       └─► planne
 Banner prereq text (cached) ──► PrereqExpression
 ```
 
-## Term snapshots (`src/unw_planner/banner/search.py`)
+## Term snapshots (`src/flightplan/banner/search.py`)
 
 `fetch_term(term)` pages `GET /ssb/searchResults/searchResults`
 (`pageOffset`/`pageMaxSize=500`) until `totalCount` is consumed. Observed:
@@ -34,7 +34,7 @@ Total: 19 requests, ~6.1 MB of JSON on disk. `TermSnapshot` exposes
 `by_course`, `by_subject`, `by_attribute`, `by_instructor`, `open_only`,
 `search`, `offerings`, `instructors`, `attributes`.
 
-## Requirements (`src/unw_planner/catalog.py`)
+## Requirements (`src/flightplan/catalog.py`)
 
 `requirements_from_audit` flattens every non-met worksheet block into targets:
 
@@ -49,7 +49,7 @@ already-applied courses, applies `open_only`, and explains empty results
 ("attribute TPHI has zero sections in 202620" vs "1 section exists but is not
 open" vs "already completed or in progress").
 
-## Draft algorithm (`src/unw_planner/planner.py`)
+## Draft algorithm (`src/flightplan/planner.py`)
 
 Order: required major → required gen-ed → optional major electives → remaining
 electives. For each requirement, candidates are ranked and the first that passes
