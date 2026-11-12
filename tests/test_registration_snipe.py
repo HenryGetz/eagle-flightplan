@@ -19,6 +19,7 @@ from eagle_flightplan.models import Instructor, Section
 from eagle_flightplan.schedule import Meeting
 from eagle_flightplan.snipe import (
     SafetyError,
+    SnipeOptions,
     Target,
     authorize_live,
     check_registration_eligible,
@@ -26,6 +27,7 @@ from eagle_flightplan.snipe import (
     execute_targets,
     probe_page,
     resolve_targets,
+    run_browser,
     select_term,
 )
 
@@ -406,3 +408,36 @@ def test_select_term_reports_not_eligible_before_window():
     assert result is not None
     assert result.status == "not_eligible"
     assert "not eligible" in result.reason.lower()
+
+
+def test_prebrowser_dry_run_does_not_claim_capture(monkeypatch, tmp_path):
+    from zoneinfo import ZoneInfo
+
+    import eagle_flightplan.snipe as snipe_mod
+    from eagle_flightplan.registration import RegistrationWindow
+
+    tz = ZoneInfo("America/Chicago")
+    future = RegistrationWindow(
+        term="202620",
+        eligible=False,
+        start=datetime(2026, 11, 16, 8, 30, tzinfo=tz),
+        end=datetime(2027, 3, 22, 23, 59, tzinfo=tz),
+        reason="Term not eligible for registration",
+        source="banner_prepare",
+        parse_status="parsed",
+        standing="Senior",
+    )
+    capture = tmp_path / "never-created.jsonl"
+    monkeypatch.setattr(snipe_mod, "window", lambda term, ssb=None: future)
+    monkeypatch.setattr(snipe_mod, "_capture_path", lambda term, label: capture)
+    monkeypatch.setattr("eagle_flightplan.auth.session_valid", lambda settings=None: True)
+    monkeypatch.setattr("eagle_flightplan.auth.ensure", lambda settings=None: object())
+
+    result = run_browser(
+        SnipeOptions(term="202620", mode="window", dry_run=True),
+        [Target(crn="20010", course="ACC 2101")],
+    )
+
+    assert result.status == "dry_run"
+    assert result.capture_path is None
+    assert not capture.exists()

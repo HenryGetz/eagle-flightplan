@@ -755,7 +755,6 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
             return SnipeResult(
                 status="no_seats",
                 reason="no target section has an open seat yet",
-                capture_path=str(capture),
             )
         current = window(options.term, ssb=ssb)
 
@@ -770,14 +769,12 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
                         "and click Save once when Banner becomes eligible."
                     ),
                     attempted=[target.crn for target in targets],
-                    capture_path=str(capture),
                 )
         elif not current.eligible:
             if current.start is None:
                 return SnipeResult(
                     status="not_eligible",
                     reason=current.reason or "Term not eligible for registration",
-                    capture_path=str(capture),
                 )
             target = current.start + timedelta(seconds=options.offset_seconds)
             launch_at = target - timedelta(seconds=max(0, options.prewarm_seconds))
