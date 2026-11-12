@@ -1,6 +1,6 @@
 &lt;div align=&quot;center&quot;&gt;
 
-# 🎓 unw-planner
+# 🎓 Eagle Flightplan
 
 **An AI-ready degree & schedule planner for University of Northwestern – St. Paul students.**
 
