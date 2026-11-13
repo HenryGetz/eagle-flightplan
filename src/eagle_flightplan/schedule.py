@@ -19,7 +19,7 @@ Core rules
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, datetime, time
 from enum import Enum
 from typing import Iterable, Literal, Sequence
 
@@ -38,6 +38,21 @@ class Weekday(str, Enum):
     FRI = "Fri"
     SAT = "Sat"
     SUN = "Sun"
+
+
+def parse_banner_date(raw: str | date | None) -> date | None:
+    """Parse Banner's ``"MM/DD/YYYY"`` (or ISO) date; blank/TBA -> ``None``."""
+    if raw is None or isinstance(raw, date):
+        return raw
+    text = str(raw).strip()
+    if not text or text.upper() in {"TBA", "TBD", "ARR", "N/A", "-"}:
+        return None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def parse_banner_time(raw: str | int | None) -> time | None:
@@ -80,6 +95,8 @@ class Meeting(BaseModel):
     day: Weekday
     start: time | None = None
     end: time | None = None
+    start_date: date | None = None
+    end_date: date | None = None
     location: str = ""
     kind: str = ""
 
@@ -89,6 +106,22 @@ class Meeting(BaseModel):
         if isinstance(value, str):
             return parse_banner_time(value)
         return value
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _coerce_date(cls, value):  # noqa: ANN001 - pydantic hook
+        return parse_banner_date(value)
+
+    def overlaps_dates(self, other: "Meeting") -> bool:
+        """True unless both meetings have complete, disjoint date ranges."""
+        if (
+            self.start_date is None
+            or self.end_date is None
+            or other.start_date is None
+            or other.end_date is None
+        ):
+            return True
+        return self.start_date <= other.end_date and other.start_date <= self.end_date
 
     @property
     def scheduled(self) -> bool:
@@ -122,6 +155,7 @@ class ScheduleSection(BaseModel):
     term: str = ""
     link_identifier: str | None = None
     instructional_method: str = ""
+    part_of_term: str = ""
     meetings: tuple[Meeting, ...] = Field(default_factory=tuple)
     notes: tuple[str, ...] = Field(default_factory=tuple)
 
@@ -159,6 +193,8 @@ class Conflict(BaseModel):
     crn_b: str
     title_a: str
     title_b: str
+    part_of_term_a: str = ""
+    part_of_term_b: str = ""
     kind: Literal["overlap", "tba"] = "overlap"
 
     @property
@@ -176,8 +212,11 @@ class Conflict(BaseModel):
                 f"{self.day.value} TBA: CRN {self.crn_a} {self.title_a} has no scheduled time "
                 f"and cannot be checked against CRN {self.crn_b} {self.title_b}"
             )
+        parts = ""
+        if self.part_of_term_a or self.part_of_term_b:
+            parts = f" [part {self.part_of_term_a or '?'} vs {self.part_of_term_b or '?'}]"
         return (
-            f"{self.day.value} {self.span} ({self.minutes} min): "
+            f"{self.day.value} {self.span} ({self.minutes} min){parts}: "
             f"CRN {self.crn_a} {self.title_a} overlaps CRN {self.crn_b} {self.title_b}"
         )
 
@@ -241,6 +280,8 @@ def conflicts(
         for meeting_b in b.scheduled_meetings:
             if meeting_a.day != meeting_b.day:
                 continue
+            if not meeting_a.overlaps_dates(meeting_b):
+                continue
             start = max(_minutes(meeting_a.start), _minutes(meeting_b.start))
             end = min(_minutes(meeting_a.end), _minutes(meeting_b.end))
             if start < end:
@@ -253,6 +294,8 @@ def conflicts(
                         crn_b=b.crn,
                         title_a=a.full_label,
                         title_b=b.full_label,
+                        part_of_term_a=a.part_of_term,
+                        part_of_term_b=b.part_of_term,
                     )
                 )
 

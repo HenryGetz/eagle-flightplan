@@ -679,10 +679,31 @@ def remaining_payload() -> dict:
     for row in rows:
         key = (row["title"].strip().lower(), tuple(row["options"]))
         row["shared_title_with"] = [other for other in groups[key] if other != row["id"]]
+    known = round(
+        sum(row["credits_remaining"] for row in rows if row["credits_remaining"] is not None),
+        2,
+    )
+    unknown = [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "group": row["group"],
+            "priority": row["priority"],
+        }
+        for row in rows
+        if row["credits_remaining"] is None
+    ]
     return {
         "ok": True,
         "student_name": audit.student_name,
         "count": len(rows),
+        "known_credits_remaining": known,
+        "unknown_credits_count": len(unknown),
+        "unknown_credits_rows": unknown,
+        "credits_note": (
+            "known_credits_remaining sums only rows with a numeric credits_remaining; "
+            "unknown_credits_rows need pick-N or option-level credit data."
+        ),
         "requirements": rows,
     }
 
@@ -720,6 +741,7 @@ def search_payload(
     limit: int = 50,
     offset: int = 0,
     refresh: bool = False,
+    include_ratings: bool = False,
 ) -> dict:
     snapshot = _snapshot(term, refresh)
     rows = snapshot.sections
@@ -758,7 +780,7 @@ def search_payload(
     limit = min(requested_limit, SEARCH_LIMIT_CAP)
     page = rows[offset : offset + limit] if limit else []
     next_offset = (offset + len(page)) if limit else None
-    return {
+    payload: dict[str, Any] = {
         "ok": True,
         "term": term,
         "label": term_label(term) if len(term) == 6 else term,
@@ -784,6 +806,21 @@ def search_payload(
             "chk_open_only on this deployment, so this tool filters the term snapshot."
         ),
     }
+    if include_ratings:
+        provider = RatingProvider()
+        ratings: dict[str, dict[str, Any]] = {}
+        for name in sorted({person.name for row in page for person in row.faculty if person.name}):
+            info = provider.get(name)
+            ratings[name] = {
+                "rated": info.rated,
+                "rating": info.rating if info.rated else None,
+                "difficulty": info.difficulty if info.rated else None,
+                "num_ratings": info.num_ratings,
+                "confidence": info.confidence,
+                "weak_evidence": bool(info.rated and info.num_ratings < 3),
+            }
+        payload["ratings"] = ratings
+    return payload
 
 
 def course_payload(term: str, crn: str | int, refresh: bool = False) -> dict:
@@ -869,7 +906,7 @@ def candidates_payload(
     requirement: str | None = None,
     refresh: bool = False,
     open_only: bool = True,
-    compact: bool = False,
+    compact: bool = True,
     limit: int = 0,
 ) -> dict:
     snapshot = _snapshot(term, refresh)
@@ -995,6 +1032,8 @@ def conflicts_payload(
                 "crn_b": conflict.crn_b,
                 "title_a": conflict.title_a,
                 "title_b": conflict.title_b,
+                "part_of_term_a": conflict.part_of_term_a,
+                "part_of_term_b": conflict.part_of_term_b,
                 "kind": conflict.kind,
                 "summary": conflict.summary,
             }
@@ -1290,6 +1329,265 @@ def draft_payload(
             "draft": _draft_payload(summer_draft, snapshots[summer]),
         }
     return payload
+
+
+def _semester_selection(row: dict[str, Any]) -> dict[str, Any]:
+    """Compact one-call selection row: no repeated section dict."""
+    rating = row.get("rating") or {}
+    return {
+        "crn": row.get("crn"),
+        "course": row.get("course"),
+        "title": row.get("title"),
+        "instructor": row.get("instructor"),
+        "rating": {
+            "rated": rating.get("rated"),
+            "rating": rating.get("rating"),
+            "difficulty": rating.get("difficulty"),
+            "num_ratings": rating.get("num_ratings"),
+            "weak_evidence": rating.get("weak_evidence"),
+        },
+        "days": row.get("days"),
+        "times": row.get("times"),
+        "credits": row.get("credits"),
+        "credit_range": row.get("credit_range"),
+        "seats": row.get("seats"),
+        "open": row.get("open"),
+        "availability": row.get("availability"),
+        "covers": row.get("covers") or [],
+        "rationale": row.get("rationale"),
+        "prereq_unverified": row.get("prereq_unverified"),
+    }
+
+
+def _semester_next_action(
+    plan: dict[str, Any],
+    registration: dict[str, Any],
+    conflict_count: int,
+    warnings: Sequence[str],
+    plans: dict[str, Any],
+) -> str:
+    actions: list[str] = []
+    if registration.get("start") and not registration.get("eligible"):
+        actions.append(
+            f"ticket opens {registration['start']}"
+            f" ({registration.get('countdown', 'unknown')})"
+        )
+    if conflict_count:
+        actions.append(f"resolve {conflict_count} time conflict(s)")
+    if plan.get("pin_errors"):
+        actions.append("fix the pinned-course error(s)")
+    if plan.get("min_credits") and not plan.get("min_credits_met"):
+        actions.append(
+            f"plan is {plan.get('total_credits')} cr; below the "
+            f"{plan.get('min_credits')} cr minimum"
+        )
+    variable = next(
+        (warning for warning in warnings if "variable credit" in warning.lower()),
+        None,
+    )
+    if variable:
+        actions.append(variable)
+    plan_count = plans.get("count")
+    if isinstance(plan_count, int) and plan_count:
+        actions.append(f"{plan_count} Banner Plan Ahead worksheet(s) available")
+    return "; ".join(actions) or "review the plan and register when the ticket opens"
+
+
+def semester_plan_payload(
+    term: str,
+    max_credits: float = 16,
+    profile: str = "max_rated",
+    avoid_days: Sequence[str] | str | None = None,
+    earliest: str | None = None,
+    latest: str | None = None,
+    include_summer: bool = False,
+    refresh: bool = False,
+    min_credits: float = 0,
+    required_crns: Sequence[str | int] | str | None = None,
+    required_courses: Sequence[str] | str | None = None,
+    exclude_crns: Sequence[str | int] | str | None = None,
+    exclude_courses: Sequence[str] | str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    hours: dict[str, float] | None = None,
+    include_banner_plans: bool = True,
+) -> dict:
+    """One-call semester report: draft + conflicts + ticket + Banner plans.
+
+    The draft is never hidden by a window/plan failure; those errors are returned
+    in their own fields. This is read-only.
+    """
+    draft = draft_payload(
+        term,
+        max_credits,
+        profile,
+        avoid_days,
+        earliest,
+        latest,
+        include_summer,
+        refresh,
+        min_credits,
+        required_crns,
+        required_courses,
+        exclude_crns,
+        exclude_courses,
+        avoid_instructors,
+        exclude_arrangement,
+        hours,
+    )
+    body = draft.get("draft") or {}
+    selections = body.get("selections") or []
+    crns = [str(row.get("crn")) for row in selections if row.get("crn")]
+
+    conflict_data: dict[str, Any]
+    if crns:
+        try:
+            raw_conflicts = conflicts_payload(term, crns, refresh=False)
+            conflict_data = {
+                "count": raw_conflicts.get("conflict_count", 0),
+                "summary": raw_conflicts.get("conflict_summary", ""),
+                "items": [
+                    {
+                        "day": row.get("day"),
+                        "start": row.get("start"),
+                        "end": row.get("end"),
+                        "crn_a": row.get("crn_a"),
+                        "crn_b": row.get("crn_b"),
+                        "title_a": row.get("title_a"),
+                        "title_b": row.get("title_b"),
+                        "part_of_term_a": row.get("part_of_term_a"),
+                        "part_of_term_b": row.get("part_of_term_b"),
+                    }
+                    for row in raw_conflicts.get("conflicts", [])
+                ],
+                "unscheduled_crns": [
+                    row.get("crn") for row in raw_conflicts.get("unscheduled", [])
+                ],
+            }
+        except Exception as exc:
+            conflict_data = {
+                "count": None,
+                "summary": "",
+                "items": [],
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+    else:
+        conflict_data = {"count": 0, "summary": "no selections", "items": []}
+
+    try:
+        raw_window = registration_window_payload(term)
+        windows = raw_window.get("windows") or []
+        default_row = windows[0] if windows else {}
+        row = next(
+            (item for item in windows if item.get("term") == term),
+            default_row,
+        )
+        registration = {
+            "term": term,
+            "eligible": row.get("eligible"),
+            "start": row.get("start"),
+            "end": row.get("end"),
+            "source": row.get("source"),
+            "standing": row.get("standing"),
+            "registration_standing": row.get("registration_standing"),
+            "countdown": row.get("countdown"),
+            "parse_status": row.get("parse_status"),
+            "reason": row.get("reason"),
+            "standing_note": row.get("standing_note"),
+        }
+        if not windows:
+            registration["error"] = raw_window.get("error") or "no window rows returned"
+    except Exception as exc:
+        registration = {
+            "term": term,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    if include_banner_plans:
+        try:
+            raw_plans = plans_payload(term)
+            plans: dict[str, Any] = {
+                "count": raw_plans.get("count", 0),
+                "plan_ahead_available": raw_plans.get("plan_ahead_available"),
+                "plans": [
+                    {
+                        "id": plan.get("id"),
+                        "name": plan.get("name"),
+                        "credits": plan.get("total_planned_credit_hours"),
+                        "course_count": len(plan.get("courses") or []),
+                    }
+                    for plan in raw_plans.get("plans", [])
+                ],
+            }
+            if not raw_plans.get("ok", True):
+                plans["error"] = raw_plans.get("error") or raw_plans.get("note")
+        except Exception as exc:
+            plans = {"count": None, "error": f"{type(exc).__name__}: {exc}"}
+    else:
+        plans = {"skipped": True, "count": None}
+
+    plan_summary = {
+        "total_credits": body.get("total_credits"),
+        "min_credits": body.get("min_credits"),
+        "min_credits_met": body.get("min_credits_met"),
+        "selection_count": body.get("selection_count"),
+        "verified": body.get("verified"),
+        "verify_problems": body.get("verify_problems", []),
+        "avg_rmp_rating": body.get("avg_rmp_rating"),
+        "rated_picks": body.get("rated_picks"),
+        "unrated_picks": body.get("unrated_picks"),
+        "catalog": draft.get("catalog"),
+    }
+    result: dict[str, Any] = {
+        "ok": bool(draft.get("ok", True)),
+        "tool": "unw_semester_plan",
+        "term": term,
+        "label": draft.get("label") or body.get("label") or (
+            term_label(term) if len(term) == 6 else term
+        ),
+        "student": draft.get("student"),
+        "current_term": draft.get("current_term"),
+        "plan": plan_summary,
+        "selections": [_semester_selection(row) for row in selections],
+        "grid": body.get("grid", ""),
+        "grid_legend": body.get("grid_legend", {}),
+        "pinned": body.get("pinned", []),
+        "pin_errors": body.get("pin_errors", []),
+        "unplaced": body.get("unplaced", []),
+        "warnings": body.get("warnings", []),
+        "conflicts": conflict_data,
+        "registration": registration,
+        "banner_plans": plans,
+    }
+    if draft.get("error"):
+        result["error"] = draft["error"]
+    if draft.get("hint"):
+        result["hint"] = draft["hint"]
+    if "summer" in draft:
+        summer = draft["summer"] or {}
+        summer_body = summer.get("draft") or {}
+        result["summer_summary"] = {
+            "total_credits": summer_body.get("total_credits"),
+            "selection_count": summer_body.get("selection_count"),
+        }
+    result["next_action"] = _semester_next_action(
+        {
+            "total_credits": plan_summary["total_credits"],
+            "min_credits": plan_summary["min_credits"],
+            "min_credits_met": plan_summary["min_credits_met"],
+            "pin_errors": result["pin_errors"],
+        },
+        registration,
+        int(conflict_data.get("count") or 0),
+        result["warnings"],
+        plans,
+    )
+    result["note"] = (
+        "Read-only one-semester report. It never registers/adds/drops. The draft "
+        "survives a ticket or Banner-plan failure; inspect registration.error/"
+        "banner_plans.error when present."
+    )
+    return result
 
 
 def _term_key(term: str) -> tuple[int, int]:
@@ -2167,11 +2465,11 @@ def registration_window_payload(term: str | None = None) -> dict:
         except Exception:
             listed = []
         codes = [item.code for item in listed if "view only" not in item.description.lower()]
+        upcoming = [code for code in codes if _term_key(code) > _term_key(CURRENT_TERM)]
+        next_term = min(upcoming, key=_term_key) if upcoming else None
         if term:
             wanted = [str(term).strip()]
         else:
-            upcoming = [code for code in codes if _term_key(code) > _term_key(CURRENT_TERM)]
-            next_term = min(upcoming, key=_term_key) if upcoming else None
             wanted = [CURRENT_TERM]
             if next_term and next_term != CURRENT_TERM:
                 wanted.append(next_term)
@@ -2185,6 +2483,11 @@ def registration_window_payload(term: str | None = None) -> dict:
                         "term_label": term_label(code) if len(code) == 6 else code,
                         "opens_in_seconds": result.opens_in_seconds,
                         "countdown": countdown(result.opens_in_seconds),
+                        "registration_standing": result.standing,
+                        "standing_note": (
+                            "registration_standing is Banner's standing for registration "
+                            "purposes for this term; Degree Works classification may differ"
+                        ),
                     }
                 )
                 rows.append(data)
@@ -2202,6 +2505,11 @@ def registration_window_payload(term: str | None = None) -> dict:
                         "error": f"{type(exc).__name__}: {exc}",
                         "opens_in_seconds": None,
                         "countdown": "unknown",
+                        "registration_standing": None,
+                        "standing_note": (
+                            "registration_standing is Banner's standing for registration "
+                            "purposes for this term; Degree Works classification may differ"
+                        ),
                     }
                 )
     return {
@@ -2232,7 +2540,6 @@ def registration_window_payload(term: str | None = None) -> dict:
 # --------------------------------------------------------------------------- #
 INSTRUCTIONS = """\
 Eagle Flightplan: Degree Works audit + Banner 9 class search + planning tools.
-
 START HERE
 - Call unw_session() first. If authenticated=false, try one read tool
   (unw_profile/unw_terms); reads may work when degraded. Stop only on auth/session
@@ -2243,6 +2550,8 @@ START HERE
 - DO confirm declared programs against what the student says. They diverge often
   (e.g. a student says "ministry minor" while the audit says "Bible"). Report the
   discrepancy, do not silently pick one.
+- For "what should I take" call unw_semester_plan once (draft+conflicts+ticket+plans);
+  use unw_plan_draft only for full section objects.
 
 ASK BEFORE ASSUMING
 - Credit budget, blocked days/times, earliest start, latest end, summer
@@ -2286,7 +2595,6 @@ OUTPUT
 - Always show the ASCII grid and a one-line rationale per pick. Report
   discrepancies (already-completed course, requirement the plan drops, audit vs
   catalog conflicts) instead of quietly resolving them.
-
 CACHING
 - Term snapshots are cached for 15 minutes. Pass refresh=true only when the user
   needs current seats. unw_offering_matrix reads historical snapshots and is the
@@ -2362,12 +2670,15 @@ def unw_search(
     limit: int = 50,
     offset: int = 0,
     refresh: bool = False,
+    include_ratings: bool = False,
 ) -> dict:
     """Search one term's sections (normalised rows: CRN, course, title, credits,
     seats, days/times, faculty, attributes, availability). Banner ignores the
     attribute/instructor/open-only query parameters, so filtering happens
     client-side over a cached term snapshot. ``limit`` is capped at 200; when
-    ``limit_capped`` is true follow ``next_offset`` to page through the rest."""
+    ``limit_capped`` is true follow ``next_offset`` to page through the rest.
+    ``include_ratings=True`` adds a compact RMP map for the unique instructors on
+    the returned page."""
     return _safe(
         search_payload,
         term,
@@ -2380,6 +2691,7 @@ def unw_search(
         limit,
         offset,
         refresh,
+        include_ratings,
     )
 
 
@@ -2397,16 +2709,16 @@ def unw_candidates(
     requirement: str | None = None,
     refresh: bool = False,
     open_only: bool = True,
-    compact: bool = False,
+    compact: bool = True,
     limit: int = 0,
 ) -> dict:
     """Resolve unmet requirements to sections offered in ``term`` (wraps the
     catalog resolver). ``requirement`` matches an id, title, parent group or
     target; omit it for every unmet requirement. Every empty result carries the
     reason (never offered / all closed / already completed). ``limit`` caps
-    candidates per requirement (0=all); ``compact`` omits repeated section
-    detail. One requirement can be large, so prefer compact/limit for broad
-    queries."""
+    candidates per requirement (0=all); ``compact`` (default true) omits repeated
+    section detail. Pass ``compact=false`` for full section rows. One requirement
+    can be large, so prefer limit for broad queries."""
     return _safe(candidates_payload, term, requirement, refresh, open_only, compact, limit)
 
 
@@ -2477,6 +2789,56 @@ def unw_plan_draft(
         avoid_instructors,
         exclude_arrangement,
         hours,
+    )
+
+
+@mcp.tool(structured_output=False)
+def unw_semester_plan(
+    term: str,
+    max_credits: float = 16,
+    profile: str = "max_rated",
+    avoid_days: Sequence[str] | str | None = None,
+    earliest: str | None = None,
+    latest: str | None = None,
+    include_summer: bool = False,
+    refresh: bool = False,
+    min_credits: float = 0,
+    required_crns: Sequence[str | int] | str | None = None,
+    required_courses: Sequence[str] | str | None = None,
+    exclude_crns: Sequence[str | int] | str | None = None,
+    exclude_courses: Sequence[str] | str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    hours: dict[str, float] | None = None,
+    include_banner_plans: bool = True,
+) -> dict:
+    """ONE-CALL semester report (read-only): drafts the plan, checks conflicts,
+    resolves the personal registration window and lists Banner Plan Ahead
+    worksheets. Accepts the same constraints as unw_plan_draft. Returns a compact
+    plan (totals, verified, selections with ratings/credits/covers/rationale,
+    grid, pins, unplaced, warnings), a conflict summary, the registration window
+    and Banner plan summaries, plus ``next_action``. A window or Banner-plan
+    failure is reported in its own field without hiding the draft. It never
+    registers/adds/drops."""
+    return _safe(
+        semester_plan_payload,
+        term,
+        max_credits,
+        profile,
+        avoid_days,
+        earliest,
+        latest,
+        include_summer,
+        refresh,
+        min_credits,
+        required_crns,
+        required_courses,
+        exclude_crns,
+        exclude_courses,
+        avoid_instructors,
+        exclude_arrangement,
+        hours,
+        include_banner_plans,
     )
 
 

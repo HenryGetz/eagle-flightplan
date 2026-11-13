@@ -548,6 +548,11 @@ class PrereqProvider:
             expression = self.expression(section)
         except Exception as exc:  # noqa: BLE001 - never fail planning on fetch errors
             return None, f"prerequisite text unavailable ({exc.__class__.__name__})"
+        # A section tagged PREQ promises a prerequisite even when Banner returns
+        # no text (or only "No prerequisite information available"). Treat that
+        # as unverified, not as "no prerequisite".
+        if "PREQ" in section.attribute_codes and expression.parse_status == "none":
+            return None, "PREQ attribute present but Banner returned no prerequisite text"
         result = expression.satisfied_by(passed)
         if result is True:
             return True, ""
@@ -904,6 +909,22 @@ class Planner:
             plan.warnings.append(
                 "some sections are not open yet (future term); verify seats when registration opens"
             )
+        for selection in plan.selections:
+            section = snapshot.by_crn(selection.crn)
+            if section is None:
+                continue
+            low, high = section.credits_low, section.credits_high
+            if (
+                low is not None
+                and high is not None
+                and high != low
+                and str(section.crn) not in constraints.credit_overrides
+            ):
+                plan.warnings.append(
+                    f"{section.code} CRN {section.crn}: variable credit "
+                    f"{low:g}-{high:g}; reserved {section.planning_credits:g} cr (low end). "
+                    f"Set hours for CRN {section.crn} to reserve more."
+                )
         plan.total_credits = round(
             sum(self._credits(section, constraints) for section in selected), 2
         )

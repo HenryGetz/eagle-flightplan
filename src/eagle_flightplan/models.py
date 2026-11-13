@@ -145,6 +145,7 @@ class Section(BaseModel):
             term=self.term,
             link_identifier=self.link_identifier,
             instructional_method=self.instructional_method,
+            part_of_term=self.part_of_term,
             meetings=tuple(self.meetings),
         )
 

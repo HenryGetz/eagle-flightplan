@@ -48,6 +48,22 @@ All notable changes to this project are documented here. The format follows
 - The old claim that clicking Add registers a section was wrong and is corrected
   in `docs/registration.md` and `docs/banner-api.md`.
 
+### Fixed
+
+- Minor-required blocks no longer use major priority: they are
+  `gen_ed_required` (optional minor pools are `gen_ed_fill`), so a 16-credit
+  generic draft places major-required/major-pool courses before a minor.
+- Part-of-term date ranges are respected by the conflict engine: Q3 and Q4
+  meetings with the same weekday/time no longer conflict when their
+  `startDate`/`endDate` ranges are disjoint. Missing ranges still compare by time.
+- A section carrying the `PREQ` attribute but no Banner prerequisite text now
+  returns `prereq_ok:null` / `prereq_status:"unknown"` instead of `verified`.
+- `unw_candidates` defaults to `compact=true`; pass `compact=false` for full rows.
+- `unw_registration_window` computes `next_term` even when `term` is passed and
+  adds `registration_standing`/`standing_note`.
+- Variable-credit selections without an `hours` override emit a warning naming
+  the CRN and range (the planner still reserves the low end).
+
 ### Changed
 
 - Ratings cache compatibility: `.state/ratings.json` is now flat (all
@@ -84,6 +100,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `unw_semester_plan` (one call, read-only): draft + conflicts + personal
+  registration window + Banner Plan Ahead summaries in a compact report with
+  selections, grid, pins/unplaced/warnings, `next_action` and per-source error
+  fields. The MCP surface is now 21 tools.
+- `unw_search(include_ratings=true)` adds a compact RMP map for the unique
+  instructors on the returned page.
+- `unw_remaining` reports `known_credits_remaining`,
+  `unknown_credits_rows`/`unknown_credits_count` so an agent can say which part of
+  the remaining load is computable.
 - Registration windows now use Banner's server-rendered Prepare for Registration
   page (`GET /ssb/prepareRegistration/prepareRegistration`) when
   `term/search?mode=registration` has no window. A future personal ticket is

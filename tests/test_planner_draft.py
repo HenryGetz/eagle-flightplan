@@ -607,3 +607,113 @@ def test_pinned_unknown_prereq_is_flagged(tmp_path):
     assert any(
         "pinned" in warning and "could not be verified" in warning for warning in draft.warnings
     )
+
+
+def test_preq_attribute_without_text_is_unknown(tmp_path):
+    tagged = section("1", number="4855", credits=2.0, attributes=("PREQ",))
+    provider = PrereqProvider(
+        directory=tmp_path,
+        fetcher=lambda sec: "No prerequisite information available.",
+    )
+    ok, reason = provider.check(tagged, set())
+    assert ok is None
+    assert "PREQ" in reason
+
+
+def test_minor_requirement_never_outranks_major(tmp_path):
+    major = RequirementGroup(
+        id="MAJ",
+        title="Major: Computer Science",
+        kind=GroupKind.MAJOR,
+        blocks=[
+            RequirementBlock(
+                label="Major core",
+                pick_n_of=1,
+                options=[CourseRef(subject="CYS", number="4245")],
+            )
+        ],
+    )
+    minor = RequirementGroup(
+        id="MIN",
+        title="Minor: Ministry",
+        kind=GroupKind.MINOR,
+        blocks=[
+            RequirementBlock(
+                label="Ministry core",
+                pick_n_of=1,
+                options=[CourseRef(subject="MIN", number="3206")],
+            )
+        ],
+    )
+    audit = Audit(groups=[minor, major])
+    sections = [
+        section("1", subject="CYS", number="4245", credits=4.0, instructor="Smith, James"),
+        section(
+            "2",
+            subject="MIN",
+            number="3206",
+            credits=4.0,
+            instructor="Terry, Justin",
+            days=(Weekday.TUE,),
+        ),
+    ]
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=16))
+    assert [selection.course for selection in draft.selections] == ["CYS 4245", "MIN 3206"]
+    assert draft.selections[0].requirement == "Major core"
+
+
+def test_variable_credit_selection_warns_and_names_range(tmp_path):
+    variable = section("23251", subject="COS", number="4841", credits=1.0)
+    variable.credits_high = 4.0
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Independent study",
+                pick_n_of=1,
+                options=[CourseRef(subject="COS", number="4841")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [variable])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=16))
+    assert [selection.crn for selection in draft.selections] == ["23251"]
+    warning = next(item for item in draft.warnings if "variable credit" in item.lower())
+    assert "CRN 23251" in warning
+    assert "1-4" in warning
+    assert "Set hours" in warning
+
+
+def test_variable_credit_override_suppresses_warning(tmp_path):
+    variable = section("23251", subject="COS", number="4841", credits=1.0)
+    variable.credits_high = 4.0
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Independent study",
+                pick_n_of=1,
+                options=[CourseRef(subject="COS", number="4841")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [variable])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft(
+        "202620", Constraints(max_credits=16, credit_overrides={"23251": 4.0})
+    )
+    assert not any("variable credit" in item.lower() for item in draft.warnings)
+    assert draft.total_credits == 4.0

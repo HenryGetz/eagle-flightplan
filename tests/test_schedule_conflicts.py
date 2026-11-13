@@ -132,3 +132,87 @@ def test_banner_time_parsing_variants():
     assert parse_banner_time(None) is None
     assert parse_banner_time("2400") == time(0, 0)
     assert parse_banner_time("9999") is None
+
+
+def test_non_overlapping_part_of_term_dates_do_not_conflict():
+    q3 = section(
+        "301",
+        [
+            Meeting(
+                day="Mon",
+                start="1000",
+                end="1200",
+                start_date="01/11/2027",
+                end_date="03/03/2027",
+                kind="Lecture",
+            )
+        ],
+        part_of_term="Q3",
+    )
+    q4 = section(
+        "302",
+        [
+            Meeting(
+                day="Mon",
+                start="1000",
+                end="1200",
+                start_date="03/15/2027",
+                end_date="05/07/2027",
+                kind="Lecture",
+            )
+        ],
+        part_of_term="Q4",
+    )
+    assert conflicts(q3, q4) == []
+    assert find_conflicts([q3, q4]) == []
+
+
+def test_overlapping_part_of_term_dates_still_conflict():
+    q3 = section(
+        "311",
+        [
+            Meeting(
+                day="Mon",
+                start="1000",
+                end="1200",
+                start_date="01/11/2027",
+                end_date="03/15/2027",
+                kind="Lecture",
+            )
+        ],
+        part_of_term="Q3",
+    )
+    full = section(
+        "312",
+        [
+            Meeting(
+                day="Mon",
+                start="1000",
+                end="1200",
+                start_date="01/11/2027",
+                end_date="05/07/2027",
+                kind="Lecture",
+            )
+        ],
+        part_of_term="1",
+    )
+    found = conflicts(q3, full)
+    assert len(found) == 1
+    assert "part Q3 vs 1" in found[0].summary
+
+
+def test_missing_date_range_is_treated_as_overlapping():
+    dated = section(
+        "321",
+        [
+            Meeting(
+                day="Mon",
+                start="1000",
+                end="1200",
+                start_date="01/11/2027",
+                end_date="03/03/2027",
+            )
+        ],
+    )
+    undated = section("322", [Meeting(day="Mon", start="1000", end="1200")])
+    assert len(conflicts(dated, undated)) == 1

@@ -165,8 +165,12 @@ def _priority(
     attributes: list[str],
 ) -> Priority:
     optional = _is_optional(group_title, label, kind, min_credits)
-    if kind in (GroupKind.MAJOR, GroupKind.MINOR):
+    if kind is GroupKind.MAJOR:
         return Priority.MAJOR_POOL if optional else Priority.MAJOR_REQUIRED
+    # A minor is a real requirement, but it must never outrank the major or
+    # general-education requirements when the credit budget is tight.
+    if kind is GroupKind.MINOR:
+        return Priority.GEN_ED_FILL if optional else Priority.GEN_ED_REQUIRED
     if optional:
         return Priority.GEN_ED_FILL
     # Everything else is a named general-education/degree requirement. No

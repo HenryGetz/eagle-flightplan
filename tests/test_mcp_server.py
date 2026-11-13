@@ -45,6 +45,7 @@ EXPECTED_TOOLS = {
     "unw_remaining",
     "unw_roadmap",
     "unw_search",
+    "unw_semester_plan",
     "unw_session",
     "unw_terms",
 }
@@ -313,7 +314,7 @@ async def test_tool_count_names_and_descriptions() -> None:
     tools = await mcp_server.mcp.list_tools()
     names = {tool.name for tool in tools}
     assert names == EXPECTED_TOOLS
-    assert len(tools) == 20
+    assert len(tools) == 21
     for tool in tools:
         assert tool.description and tool.description.strip(), tool.name
         assert tool.input_schema.get("type") == "object"
@@ -763,6 +764,12 @@ def test_registration_window_is_read_only_and_parses_banner_text(monkeypatch) ->
     assert payload["windows"][0]["parse_status"] == "parsed"
     assert payload["windows"][0]["start"].startswith("2026-04-20T08:30")
     assert "countdown" in payload["windows"][0]
+    assert "registration_standing" in payload["windows"][0]
+    assert "standing_note" in payload["windows"][0]
+
+    with_term = mcp_server.registration_window_payload("202620")
+    assert with_term["next_term"] == "202620"
+    assert [row["term"] for row in with_term["windows"]] == ["202620"]
 
 
 def test_current_term_prefers_audit_active_term(monkeypatch) -> None:
@@ -1036,7 +1043,11 @@ def test_candidates_compact_and_limit_keep_default_shape(monkeypatch) -> None:
     assert "meetings" not in row["candidates"][0]
     assert "faculty" not in row["candidates"][0]
 
-    full = mcp_server.candidates_payload("202620")
+    default = mcp_server.candidates_payload("202620")
+    assert default["compact"] is True
+    assert "meetings" not in default["requirements"][0]["candidates"][0]
+
+    full = mcp_server.candidates_payload("202620", compact=False)
     assert full["requirements"][0]["returned"] == 4
     assert "meetings" in full["requirements"][0]["candidates"][0]
 
@@ -1077,6 +1088,9 @@ def test_remaining_marks_shared_title_and_options(monkeypatch) -> None:
     by_id = {row["id"]: row for row in payload["requirements"]}
     assert len(by_id) == 2
     assert all(len(row["shared_title_with"]) == 1 for row in by_id.values())
+    assert payload["known_credits_remaining"] == 0
+    assert payload["unknown_credits_count"] == 2
+    assert len(payload["unknown_credits_rows"]) == 2
 
 
 def test_conflicts_payload_has_grid_legend(monkeypatch) -> None:
@@ -1118,3 +1132,179 @@ def test_session_reports_degraded_without_ordering_a_stop(monkeypatch, tmp_path)
     assert "try unw_profile/unw_terms" in payload["read_hint"]
     assert "before any Banner plan write" in payload["write_hint"]
     assert "try unw_profile" in payload["message"]
+
+
+def test_search_include_ratings_attaches_compact_map(monkeypatch) -> None:
+    section = Section(
+        crn="1",
+        term="202620",
+        subject="CYS",
+        number="1000",
+        section="01",
+        title="Python",
+        credits_low=3.0,
+        seats_available=5,
+        open=True,
+        faculty=[Instructor(name="Smith, James")],
+    )
+    snapshot = TermSnapshot(
+        meta=SnapshotMeta(term="202620", fetched_at=datetime.now(UTC), source="cache"),
+        sections=[section],
+    )
+    monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: snapshot)
+
+    class FakeRatings:
+        def get(self, name, refresh=False):
+            return RatingInfo(
+                name=name, rating=4.2, difficulty=2.1, num_ratings=12, source="rmp"
+            )
+
+    monkeypatch.setattr(mcp_server, "RatingProvider", FakeRatings)
+    plain = mcp_server.search_payload("202620", subject="CYS")
+    assert "ratings" not in plain
+    rated = mcp_server.search_payload("202620", subject="CYS", include_ratings=True)
+    assert rated["ratings"]["Smith, James"]["rating"] == 4.2
+    assert rated["ratings"]["Smith, James"]["num_ratings"] == 12
+
+
+def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
+    selection = {
+        "crn": "23251",
+        "course": "COS 4841",
+        "title": "Independent Study",
+        "instructor": "Smith, James",
+        "rating": {
+            "rated": True,
+            "rating": 4.0,
+            "difficulty": 2.0,
+            "num_ratings": 10,
+            "weak_evidence": False,
+        },
+        "days": "Mon",
+        "times": "10:00-11:00",
+        "credits": 1.0,
+        "credit_range": [1.0, 4.0],
+        "seats": 5,
+        "open": True,
+        "availability": "OPEN",
+        "covers": ["RA1:0"],
+        "rationale": "major requirement",
+        "prereq_unverified": False,
+    }
+
+    def fake_draft(*args, **kwargs):
+        return {
+            "ok": True,
+            "student": "Test Student",
+            "current_term": "202610",
+            "catalog": {"term": "202620", "source": "cache"},
+            "draft": {
+                "label": "Spring 2027",
+                "total_credits": 15.0,
+                "min_credits": 16.0,
+                "min_credits_met": False,
+                "selection_count": 1,
+                "verified": True,
+                "verify_problems": [],
+                "avg_rmp_rating": 4.0,
+                "rated_picks": 1,
+                "unrated_picks": 0,
+                "selections": [selection],
+                "grid": "grid",
+                "grid_legend": {"COS 4841": ["23251"]},
+                "pinned": [],
+                "pin_errors": [],
+                "unplaced": [],
+                "warnings": [
+                    "COS 4841 CRN 23251: variable credit 1-4; reserved 1 cr (low end). "
+                    "Set hours for CRN 23251 to reserve more."
+                ],
+            },
+        }
+
+    monkeypatch.setattr(mcp_server, "draft_payload", fake_draft)
+    monkeypatch.setattr(
+        mcp_server,
+        "conflicts_payload",
+        lambda *a, **k: {"conflict_count": 0, "conflict_summary": "", "conflicts": []},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "registration_window_payload",
+        lambda term: {
+            "windows": [
+                {
+                    "term": term,
+                    "eligible": False,
+                    "start": "2026-11-16T08:30:00-06:00",
+                    "end": "2027-03-22T23:59:00-05:00",
+                    "source": "banner_prepare",
+                    "standing": "Senior",
+                    "registration_standing": "Senior",
+                    "countdown": "3d",
+                    "parse_status": "parsed",
+                    "reason": "Term not eligible for registration",
+                    "standing_note": "Banner standing may differ from Degree Works",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "plans_payload",
+        lambda term: {
+            "count": 1,
+            "plan_ahead_available": True,
+            "plans": [
+                {
+                    "id": 59021,
+                    "name": "Advisor Plan - Spring 2027",
+                    "total_planned_credit_hours": 15,
+                    "courses": [{"crn": "23251"}],
+                }
+            ],
+        },
+    )
+
+    out = mcp_server.semester_plan_payload(
+        "202620", max_credits=16, min_credits=16, hours={"23251": 2}
+    )
+    assert out["ok"] is True
+    assert out["label"] == "Spring 2027"
+    assert out["plan"]["total_credits"] == 15.0
+    assert out["plan"]["min_credits_met"] is False
+    assert out["selections"][0]["crn"] == "23251"
+    assert out["selections"][0]["rating"]["rating"] == 4.0
+    assert "meetings" not in out["selections"][0]
+    assert out["conflicts"]["count"] == 0
+    assert out["registration"]["start"].startswith("2026-11-16T08:30")
+    assert out["banner_plans"]["count"] == 1
+    assert "ticket opens" in out["next_action"]
+    assert "variable credit" in out["next_action"]
+
+
+def test_semester_plan_keeps_draft_when_window_and_plans_fail(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "draft_payload",
+        lambda *a, **k: {
+            "ok": True,
+            "draft": {"selections": [], "total_credits": 0.0, "min_credits": 0.0},
+        },
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "conflicts_payload",
+        lambda *a, **k: {"conflict_count": 0, "conflicts": []},
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(mcp_server, "registration_window_payload", boom)
+    monkeypatch.setattr(mcp_server, "plans_payload", boom)
+    out = mcp_server.semester_plan_payload("202620")
+    assert out["ok"] is True
+    assert "error" in out["registration"]
+    assert "error" in out["banner_plans"]
+    assert out["selections"] == []

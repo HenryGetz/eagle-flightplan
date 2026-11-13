@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "unw_remaining",
     "unw_roadmap",
     "unw_search",
+    "unw_semester_plan",
     "unw_session",
     "unw_terms",
 }
@@ -49,7 +50,7 @@ async def test_stdio_server_starts_without_network_or_credentials() -> None:
         listing = await client.list_tools()
         tools = {tool.name: tool for tool in listing.tools}
         assert set(tools) == EXPECTED_TOOLS
-        assert len(tools) == 20
+        assert len(tools) == 21
         for tool in tools.values():
             assert (tool.description or "").strip(), tool.name
             assert tool.input_schema.get("type") == "object"

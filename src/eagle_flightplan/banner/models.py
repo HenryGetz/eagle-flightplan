@@ -112,6 +112,8 @@ class MeetingTime(BaseModel):
                     day=Weekday.MON,
                     start=self.begin_time,
                     end=self.end_time,
+                    start_date=self.start_date,
+                    end_date=self.end_date,
                     location=self.location,
                     kind=self.meeting_type_description or self.meeting_schedule_type,
                 )
@@ -121,6 +123,8 @@ class MeetingTime(BaseModel):
                 day=day,
                 start=self.begin_time,
                 end=self.end_time,
+                start_date=self.start_date,
+                end_date=self.end_date,
                 location=self.location,
                 kind=self.meeting_type_description or self.meeting_schedule_type,
             )
@@ -236,6 +240,7 @@ class Section(BaseModel):
             term=self.term,
             link_identifier=self.link_identifier,
             instructional_method=self.instructional_method_description,
+            part_of_term=self.part_of_term,
             meetings=tuple(meetings),
         )
 
@@ -323,5 +328,6 @@ class SectionDetail(BaseModel):
             term=self.term,
             link_identifier=section.link_identifier if section else None,
             instructional_method=method,
+            part_of_term=getattr(section, "part_of_term", "") if section else "",
             meetings=tuple(meetings),
         )
