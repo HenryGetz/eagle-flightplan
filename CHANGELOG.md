@@ -8,6 +8,31 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- One-semester correctness: pins of a completed or in-progress course report
+  `already_completed` and are not placed again (no credits, no hard error), and
+  prerequisite minimum grades are enforced (a final grade below Banner's
+  `Minimum Grade of X` blocks; in-progress/transfer grades are not failed).
+- A variable-credit section with a 0-credit low end reserves its high end until
+  an explicit `hours` override is supplied; `unw_conflicts`,
+  `unw_register_preview` and `unw_semester_plan` share that credit basis and
+  accept `hours`.
+- Draft verification now includes unverified prerequisites, unplaced
+  requirements and failed pins, and every draft reports `verified_scope`.
+- `next_action` distinguishes an empty plan, an expired window, a future ticket
+  and an open-but-ineligible window instead of recommending an impossible
+  `unw_register_preview` call.
+- `exclude_arrangement` filters arranged candidates instead of dropping the
+  whole requirement pool; partially-TBA sections are flagged (`partial_tba`).
+- Linked lecture/lab exemptions apply only to complementary meeting kinds, so
+  two same-time lab/clinical alternatives conflict.
+- Minors have their own `minor_required` priority bucket between major pools and
+  general education; `unw_plan_draft` accepts the `credits`/`pins`/`courses`
+  aliases.
+- The load filler no longer refills an already-satisfied pool, and
+  "choose 3-4 credits" reserves 3, not 4.
+- The week grid carries a `grid_note` and date-disjoint part-of-term legend
+  slugs are labelled instead of implying an overlap.
+
 - Audit grades: `F`, `WF`, `NC`, `U`, `W`, `WP`, `I` and `AU` no longer count as
   completed. They are retained with `failed`/`withdrawn`/`incomplete`/`audit`
   status, never enter `applied_codes`/applied credits/pick counts, and a failed

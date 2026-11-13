@@ -62,6 +62,7 @@ from .catalog import (
     Priority,
     Requirement,
     applied_codes,
+    applied_grades,
     availability_of,
     offering_history_attribute,
     offering_history_course,
@@ -87,6 +88,7 @@ from .schedule import (
     conflict_summary,
     find_conflicts,
     grid_legend,
+    grid_note,
     parse_banner_time,
     render_grid,
 )
@@ -281,7 +283,7 @@ def section_payload(section: Section, *, current_term: str | None = CURRENT_TERM
         and section.credits_high != section.credits_low,
         "credits_semantics": (
             "credits=display high end; planning_credits=reserved (low end unless "
-            "overridden); credit_range=raw range"
+            "overridden; a 0-low range reserves the high end); credit_range=raw range"
         ),
         "part_of_term_note": (
             "Banner-native part-of-term code; '1' is full term, other codes are "
@@ -313,6 +315,7 @@ def section_payload(section: Section, *, current_term: str | None = CURRENT_TERM
         "schedule_type": section.schedule_type,
         "link_identifier": section.link_identifier,
         "is_linked": section.is_linked,
+        "partial_tba": section.partial_tba,
     }
 
 
@@ -669,8 +672,9 @@ def remaining_payload() -> dict:
     order = {
         Priority.MAJOR_REQUIRED.value: 0,
         Priority.MAJOR_POOL.value: 1,
-        Priority.GEN_ED_REQUIRED.value: 2,
-        Priority.GEN_ED_FILL.value: 3,
+        Priority.MINOR_REQUIRED.value: 2,
+        Priority.GEN_ED_REQUIRED.value: 3,
+        Priority.GEN_ED_FILL.value: 4,
     }
     rows.sort(key=lambda row: (order.get(row["priority"], 9), row["group"], row["title"]))
     groups: dict[tuple[str, tuple[str, ...]], list[str]] = {}
@@ -999,8 +1003,19 @@ def ratings_payload(names: Sequence[str] | str, refresh: bool = False) -> dict:
     }
 
 
+def _planned_credits(section: Section, hours: dict[str, float] | None = None) -> float:
+    """One credit basis for plans, previews and conflict totals."""
+    override = (hours or {}).get(str(section.crn))
+    if override is not None:
+        return float(override)
+    return float(section.planning_credits or 0.0)
+
+
 def conflicts_payload(
-    term: str, crns: Sequence[str | int] | str | int, refresh: bool = False
+    term: str,
+    crns: Sequence[str | int] | str | int,
+    refresh: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     wanted = [str(item).strip() for item in _norm_list(crns)]
     if not wanted:
@@ -1016,6 +1031,7 @@ def conflicts_payload(
             found.append(section)
     schedule_sections = [section.to_schedule_section() for section in found]
     conflicts = find_conflicts(schedule_sections)
+    overrides = {str(crn): float(value) for crn, value in (hours or {}).items()}
     return {
         "ok": True,
         "term": term,
@@ -1041,11 +1057,17 @@ def conflicts_payload(
             for conflict in conflicts
         ],
         "conflict_summary": conflict_summary(conflicts),
-        "total_credits": round(sum(section.credits or 0 for section in found), 2),
+        "hours": overrides,
+        "total_credits": round(sum(_planned_credits(section, overrides) for section in found), 2),
         "grid": render_grid(schedule_sections, include_tba=True) if found else "",
+        "grid_note": grid_note(schedule_sections),
         "grid_legend": grid_legend(schedule_sections) if found else {},
         "unscheduled": [
             section_payload(section) for section in found if section.unscheduled
+        ],
+        "partial_tba_crns": [section.crn for section in found if section.partial_tba],
+        "partial_tba": [
+            section_payload(section) for section in found if section.partial_tba
         ],
         "catalog": _catalog_meta(snapshot),
     }
@@ -1168,6 +1190,8 @@ def _draft_selection_payload(selection, section: Section | None = None) -> dict:
         "availability": selection.availability,
         "verify_at_registration": selection.verify_at_registration,
         "prereq_unverified": selection.prereq_unverified,
+        "partial_tba": selection.partial_tba,
+        "requires_arrangement": selection.requires_arrangement,
         "requirement_id": selection.requirement_id,
         "requirement": selection.requirement,
         "group": selection.group,
@@ -1181,9 +1205,12 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
     rated = [row.rating for row in draft.selections if row.rating.rated]
     average = round(sum(row.rating or 0 for row in rated) / len(rated), 2) if rated else None
     selections = []
+    schedule_sections = []
     for selection in draft.selections:
         section = snapshot.by_crn(selection.crn) if snapshot is not None else None
         selections.append(_draft_selection_payload(selection, section))
+        if section is not None:
+            schedule_sections.append(section.to_schedule_section())
     payload = {
         "term": draft.term,
         "label": draft.label or term_label(draft.term),
@@ -1206,17 +1233,8 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
         ],
         "warnings": list(draft.warnings),
         "grid": draft.grid,
-        "grid_legend": (
-            grid_legend(
-                [
-                    section.to_schedule_section()
-                    for selection in draft.selections
-                    if (section := snapshot.by_crn(selection.crn)) is not None
-                ]
-            )
-            if snapshot is not None
-            else {}
-        ),
+        "grid_note": grid_note(schedule_sections),
+        "grid_legend": grid_legend(schedule_sections) if schedule_sections else {},
         "score_breakdown": list(draft.score_breakdown),
         "avg_rmp_rating": average,
         "rated_picks": len(rated),
@@ -1226,6 +1244,11 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
         problems = verify_draft(draft, snapshot)
         payload["verify_problems"] = problems
         payload["verified"] = not problems
+        payload["verified_scope"] = (
+            "internal consistency: every CRN is in the snapshot, open sections have seats, "
+            "credits add up, no time conflicts, prerequisites are known, requirements placed, "
+            "pins resolved. It is not a registration guarantee."
+        )
     return payload
 
 
@@ -1357,7 +1380,20 @@ def _semester_selection(row: dict[str, Any]) -> dict[str, Any]:
         "covers": row.get("covers") or [],
         "rationale": row.get("rationale"),
         "prereq_unverified": row.get("prereq_unverified"),
+        "partial_tba": row.get("partial_tba"),
+        "requires_arrangement": row.get("requires_arrangement"),
     }
+
+
+def _parse_window_stamp(value: Any) -> datetime | None:
+    """Parse an ISO window stamp from the registration payload."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _merge_required_courses(
@@ -1384,8 +1420,12 @@ def _semester_next_action(
     crns: Sequence[str],
     tba_crns: Sequence[str],
     prereq_unverified_crns: Sequence[str],
+    now: datetime | None = None,
 ) -> str:
     crn_arg = "[" + ", ".join(json.dumps(str(crn)) for crn in crns) + "]"
+    now = now or datetime.now(UTC)
+    start = _parse_window_stamp(registration.get("start"))
+    end = _parse_window_stamp(registration.get("end"))
     plan_bits = []
     for item in plans.get("plans") or []:
         bits = []
@@ -1407,11 +1447,33 @@ def _semester_next_action(
         primary = "Fix the pinned-course error(s) first: " + "; ".join(
             str(item) for item in (plan.get("pin_errors") or [])[:2]
         )
-    elif registration.get("start") and not registration.get("eligible"):
+    elif not crns:
         primary = (
-            f"Ticket assigned; opens {registration['start']}. "
+            "No sections fit this term under the current constraints. Raise "
+            "max_credits or relax avoid_days/earliest/latest/exclude_* and re-run."
+        )
+    elif end is not None and now > end:
+        primary = (
+            f"The {term} registration window closed on {end.isoformat()}. "
+            "Re-check the ticket with unw_registration_window before any retry; "
+            "do not attempt to register."
+        )
+    elif start is not None and now < start:
+        primary = (
+            f"Ticket assigned; opens {start.isoformat()}. "
             f"Run unw_register_preview(term={term}, crns={crn_arg}) now, "
             "then submit after opening."
+        )
+    elif (
+        start is not None
+        and end is not None
+        and start <= now <= end
+        and not registration.get("eligible")
+    ):
+        primary = (
+            f"The window is open until {end.isoformat()} but Banner reports the term "
+            f"ineligible ({registration.get('reason') or 'no reason text'}). Resolve "
+            "the hold/ticket with the registrar; do not attempt to register yet."
         )
     elif registration.get("eligible"):
         primary = (
@@ -1425,12 +1487,18 @@ def _semester_next_action(
         )
 
     extras: list[str] = []
+    if plan.get("verified") is False and plan.get("verify_problems"):
+        extras.append(
+            "Verification: " + "; ".join(
+                str(item) for item in (plan.get("verify_problems") or [])[:2]
+            )
+        )
     if conflict_count:
         extras.append(f"Resolve {conflict_count} time conflict(s).")
     if tba_crns:
         extras.append(
-            f"TBA/async CRNs {', '.join(tba_crns)} cannot be time-conflict "
-            "checked; verify their times."
+            f"TBA/async or partially-TBA CRNs {', '.join(tba_crns)} cannot be fully "
+            "time-conflict checked; verify their times."
         )
     if prereq_unverified_crns:
         extras.append(
@@ -1448,6 +1516,12 @@ def _semester_next_action(
     )
     if variable:
         extras.append(variable)
+    arranged = next(
+        (warning for warning in warnings if "arranged faculty sponsor" in warning.lower()),
+        None,
+    )
+    if arranged:
+        extras.append(arranged)
     return primary + plan_note + ((" " + " ".join(extras)) if extras else "")
 
 
@@ -1514,10 +1588,12 @@ def _semester_plan_payload_unlocked(
     conflict_data: dict[str, Any]
     if crns:
         try:
-            raw_conflicts = conflicts_payload(term, crns, refresh=False)
+            raw_conflicts = conflicts_payload(term, crns, refresh=False, hours=hours_map)
             conflict_data = {
                 "count": raw_conflicts.get("conflict_count", 0),
                 "summary": raw_conflicts.get("conflict_summary", ""),
+                "total_credits": raw_conflicts.get("total_credits"),
+                "grid_note": raw_conflicts.get("grid_note", ""),
                 "items": [
                     {
                         "day": row.get("day"),
@@ -1535,6 +1611,7 @@ def _semester_plan_payload_unlocked(
                 "unscheduled_crns": [
                     row.get("crn") for row in raw_conflicts.get("unscheduled", [])
                 ],
+                "partial_tba_crns": list(raw_conflicts.get("partial_tba_crns") or []),
             }
         except Exception as exc:
             conflict_data = {
@@ -1548,26 +1625,31 @@ def _semester_plan_payload_unlocked(
 
     warnings = list(body.get("warnings") or [])
     tba_crns = [str(crn) for crn in (conflict_data.get("unscheduled_crns") or [])]
-    if not tba_crns:
+    partial_tba_crns = [
+        str(crn) for crn in (conflict_data.get("partial_tba_crns") or [])
+    ]
+    if not tba_crns and not partial_tba_crns:
         tba_crns = [
             str(row.get("crn"))
             for row in selections
             if str(row.get("times") or "").upper() == "TBA"
         ]
-    tba_set = set(tba_crns)
+    all_tba = list(dict.fromkeys(tba_crns + partial_tba_crns))
+    tba_set = set(all_tba)
     tba_sections = [
         {
             "crn": row.get("crn"),
             "course": row.get("course"),
             "title": row.get("title"),
+            "partial_tba": str(row.get("crn")) in set(partial_tba_crns),
         }
         for row in selection_rows
         if str(row.get("crn")) in tba_set
     ]
-    if tba_crns:
+    if all_tba:
         tba_warning = (
-            f"TBA/async sections cannot be time-conflict checked "
-            f"({', '.join(tba_crns)}); verify their times."
+            f"TBA/async or partially-TBA sections cannot be fully time-conflict "
+            f"checked ({', '.join(all_tba)}); verify their times."
         )
         if tba_warning not in warnings:
             warnings.append(tba_warning)
@@ -1663,6 +1745,7 @@ def _semester_plan_payload_unlocked(
         "hours": hours_map,
         "selection_count": body.get("selection_count"),
         "verified": body.get("verified"),
+        "verified_scope": body.get("verified_scope"),
         "verify_problems": body.get("verify_problems", []),
         "avg_rmp_rating": body.get("avg_rmp_rating"),
         "rated_picks": body.get("rated_picks"),
@@ -1687,14 +1770,16 @@ def _semester_plan_payload_unlocked(
         "hours": hours_map,
         "plan": plan_summary,
         "selections": selection_rows,
-        "tba_crns": tba_crns,
+        "tba_crns": all_tba,
         "tba_sections": tba_sections,
         "prereq_unverified_crns": prereq_unverified_crns,
         "prereq_unverified_sections": [
             {"crn": row.get("crn"), "course": row.get("course")} for row in prereq_rows
         ],
         "grid": body.get("grid", ""),
+        "grid_note": body.get("grid_note", ""),
         "grid_legend": body.get("grid_legend", {}),
+        "partial_tba_crns": partial_tba_crns,
         "pinned": pinned,
         "pin_errors": body.get("pin_errors", []),
         "unplaced": body.get("unplaced", []),
@@ -1719,6 +1804,8 @@ def _semester_plan_payload_unlocked(
             "total_credits": plan_summary["total_credits"],
             "min_credits": plan_summary["min_credits"],
             "min_credits_met": plan_summary["min_credits_met"],
+            "verified": plan_summary["verified"],
+            "verify_problems": plan_summary["verify_problems"],
             "pin_errors": result["pin_errors"],
         },
         registration,
@@ -1727,7 +1814,7 @@ def _semester_plan_payload_unlocked(
         plans,
         term=term,
         crns=crns,
-        tba_crns=tba_crns,
+        tba_crns=all_tba,
         prereq_unverified_crns=prereq_unverified_crns,
     )
     result["note"] = (
@@ -2264,13 +2351,14 @@ def plan_create_payload(term: str, name: str) -> dict:
     }
 
 
-def _passed_codes_or_none() -> set[str] | None:
-    """Audit course codes for the prereq gate, or None when the audit is unavailable."""
+def _audit_prereq_gate() -> tuple[set[str] | None, dict[str, str] | None]:
+    """Audit codes + grades for the prereq gate; ``(None, None)`` if unavailable."""
     try:
-        return applied_codes(AuditClient().audit())
+        audit = AuditClient().audit()
+        return applied_codes(audit), applied_grades(audit)
     except Exception as exc:
         logger.warning("audit unavailable for plan prereq gate: %s", type(exc).__name__)
-        return None
+        return None, None
 
 
 def plan_add_payload(
@@ -2280,6 +2368,7 @@ def plan_add_payload(
     subject: str | None = None,
     number: str | int | None = None,
     passed_codes: set[str] | None = None,
+    grades: dict[str, str] | None = None,
 ) -> dict:
     if crn is None and not (subject and number is not None):
         raise ValueError("Pass crn, or subject and number.")
@@ -2296,6 +2385,7 @@ def plan_add_payload(
             subject=subject,
             number=str(number) if number is not None else None,
             passed_codes=passed_codes,
+            grades=grades,
         )
         try:
             final = client.get_plan(resolved.id, term)
@@ -2427,7 +2517,7 @@ def plan_add_guarded(
         )
         if not confirm:
             return _refuse_write(effect, state, {"confirm": True})
-        passed_codes = _passed_codes_or_none()
+        passed_codes, grades = _audit_prereq_gate()
         return plan_add_payload(
             term,
             resolved.id,
@@ -2435,6 +2525,7 @@ def plan_add_guarded(
             subject=subject,
             number=number,
             passed_codes=passed_codes,
+            grades=grades,
         )
 
 
@@ -2520,12 +2611,16 @@ def plan_delete_guarded(
 # registration preview (read-only)
 # --------------------------------------------------------------------------- #
 def registration_preview_payload(
-    term: str, crns: Sequence[str | int] | str | int, refresh: bool = False
+    term: str,
+    crns: Sequence[str | int] | str | int,
+    refresh: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     """Dry run: Banner eligibility + local conflict/seat/prereq checks."""
     wanted = [str(item).strip() for item in _norm_list(crns)]
     if not wanted:
         raise ValueError("Pass at least one CRN.")
+    overrides = {str(crn): float(value) for crn, value in (hours or {}).items()}
     ssb = SSBClient(auth.ensure())
     with _BANNER_LOCK:
         eligibility: TermEligibility = ssb.set_term(term, mode="registration")
@@ -2542,9 +2637,12 @@ def registration_preview_payload(
     conflicts = find_conflicts(schedule_sections)
 
     passed: set[str] | None
+    grades: dict[str, str] = {}
     prereq_note = ""
     try:
-        passed = applied_codes(AuditClient().audit())
+        audit = AuditClient().audit()
+        passed = applied_codes(audit)
+        grades = applied_grades(audit)
     except Exception as exc:
         passed = None
         prereq_note = f"prerequisite check skipped: audit unavailable ({type(exc).__name__})"
@@ -2553,7 +2651,7 @@ def registration_preview_payload(
         provider = PrereqProvider(ssb=ssb)
         with _BANNER_LOCK:
             for section in sections:
-                ok, reason = provider.check(section, passed)
+                ok, reason = provider.check(section, passed, grades)
                 prereq_rows.append(
                     {
                         "crn": section.crn,
@@ -2587,11 +2685,24 @@ def registration_preview_payload(
             if failures
             else "Banner reports this term as registration-eligible."
         ),
-        "sections": [section_payload(section) for section in sections],
+        "sections": [
+            {
+                **section_payload(section),
+                "hours_applied": overrides.get(str(section.crn)),
+                "planned_credits": _planned_credits(section, overrides),
+            }
+            for section in sections
+        ],
         "missing_crns": missing,
+        "hours": overrides,
+        "total_credits": round(
+            sum(_planned_credits(section, overrides) for section in sections), 2
+        ),
         "conflict_count": len(conflicts),
         "conflicts": [conflict.summary for conflict in conflicts],
         "grid": render_grid(schedule_sections, include_tba=True) if sections else "",
+        "grid_note": grid_note(schedule_sections),
+        "partial_tba_crns": [section.crn for section in sections if section.partial_tba],
         "prerequisites": {
             "checked": passed is not None,
             "note": prereq_note,
@@ -2615,7 +2726,7 @@ def registration_window_payload(term: str | None = None) -> dict:
     Registration page supplies the assigned future ticket. The latter never makes
     a term eligible.
     """
-    from .registration import countdown
+    from .registration import TZ, countdown
     from .registration import window as registration_window
 
     client = SSBClient(auth.ensure())
@@ -2639,11 +2750,14 @@ def registration_window_payload(term: str | None = None) -> dict:
             try:
                 result = registration_window(code, ssb=client)
                 data = result.model_dump(mode="json")
+                countdown_text = countdown(result.opens_in_seconds)
+                if result.end is not None and result.end < datetime.now(TZ):
+                    countdown_text = "closed"
                 data.update(
                     {
                         "term_label": term_label(code) if len(code) == 6 else code,
                         "opens_in_seconds": result.opens_in_seconds,
-                        "countdown": countdown(result.opens_in_seconds),
+                        "countdown": countdown_text,
                         "registration_standing": result.standing,
                         "standing_note": (
                             "registration_standing is Banner's standing for registration "
@@ -2722,7 +2836,7 @@ ASK BEFORE ASSUMING
 PLANNING ORDER
 1. Scarce major-required courses first. Check unw_offering_matrix before proposing
    any course: never propose a fall-only course for spring (or vice versa).
-2. Then the major credit pool / electives.
+2. Then the major credit pool / electives, then minor-required slots.
 3. Then gen-ed slots, choosing the highest RMP rating among eligible sections.
 - Never propose two sections with a time conflict. Use unw_conflicts on the final
   CRN set and show the ASCII grid.
@@ -2894,12 +3008,16 @@ def unw_ratings(names: Sequence[str] | str, refresh: bool = False) -> dict:
 
 @mcp.tool(structured_output=False)
 def unw_conflicts(
-    term: str, crns: Sequence[str | int] | str | int, refresh: bool = False
+    term: str,
+    crns: Sequence[str | int] | str | int,
+    refresh: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     """Pairwise time conflicts for a CRN set, plus the ASCII week grid and the list
-    of unscheduled (TBA/asynchronous) sections. Half-open intervals; linked
-    lecture/lab pairs are exempt."""
-    return _safe(conflicts_payload, term, crns, refresh)
+    of unscheduled (TBA/asynchronous) sections. Half-open intervals; only
+    lecture/lab (or lecture/clinical) linked pairs are exempt. ``hours`` sets the
+    credit hours reserved per CRN so ``total_credits`` matches the draft basis."""
+    return _safe(conflicts_payload, term, crns, refresh, hours)
 
 
 @mcp.tool(structured_output=False)
@@ -2920,22 +3038,29 @@ def unw_plan_draft(
     avoid_instructors: Sequence[str] | str | None = None,
     exclude_arrangement: bool = False,
     hours: dict[str, float] | None = None,
+    credits: float | None = None,
+    pins: Sequence[str] | str | None = None,
+    courses: Sequence[str] | str | None = None,
 ) -> dict:
     """Draft a conflict-free term plan from the audit, prioritizing major-required
-    courses, then major pools, then gen-ed by RMP rating.
+    courses, then major pools, then minor-required, then gen-ed by RMP rating.
 
+    Canonical constraints are ``max_credits`` and ``required_courses``; the
+    ``credits``/``pins``/``courses`` aliases mirror unw_semester_plan.
     ``required_crns``/``required_courses`` pin sections the student insists on;
-    each pin reports placed/unavailable/conflict/prereq_blocked/excluded/budget and
-    a failed pin makes ok=false. ``exclude_crns``/``exclude_courses`` remove
-    candidates. ``min_credits`` keeps filling elective pools until the load is met
-    (and reports min_credits_met). ``hours`` maps a CRN to the credit hours to
-    reserve for a variable-credit section (default: the low end). Pins apply to
+    each pin reports placed/unavailable/conflict/prereq_blocked/excluded/budget/
+    already_completed, and a failed pin makes ok=false. ``exclude_crns``/
+    ``exclude_courses`` remove candidates. ``min_credits`` keeps filling elective
+    pools until the load is met (and reports min_credits_met). ``hours`` maps a CRN
+    to the credit hours to reserve for a variable-credit section (default: the low
+    end; a 0-low range reserves the high end unless overridden). Pins apply to
     this single-term draft only, not to unw_roadmap. include_summer=True also
     drafts the following summer for requirements that did not fit."""
+    merged_courses = _merge_required_courses(required_courses, pins, courses)
     return _safe(
         draft_payload,
         term,
-        max_credits,
+        credits if credits is not None else max_credits,
         profile,
         avoid_days,
         earliest,
@@ -2944,7 +3069,7 @@ def unw_plan_draft(
         refresh,
         min_credits,
         required_crns,
-        required_courses,
+        merged_courses,
         exclude_crns,
         exclude_courses,
         avoid_instructors,
@@ -3114,15 +3239,20 @@ def unw_banner_plan_delete(
 
 @mcp.tool(structured_output=False)
 def unw_register_preview(
-    term: str, crns: Sequence[str | int] | str | int, refresh: bool = False
+    term: str,
+    crns: Sequence[str | int] | str | int,
+    refresh: bool = False,
+    hours: dict[str, float] | None = None,
 ) -> dict:
     """DRY RUN ONLY: never posts add/drop/register. Returns Banner's real term
     eligibility flags and failure text for ``term``, then local checks for the
     requested CRNs: seats/availability, time conflicts and prerequisites
-    (``prereq_ok`` is null when unverified). If Banner reports the term as
-    ineligible, treat its failure text as the answer; never attempt real
-    registration."""
-    return _safe(registration_preview_payload, term, crns, refresh)
+    (``prereq_ok`` is null when unverified; minimum grade thresholds are
+    enforced). ``hours`` sets the reserved credit hours per CRN and
+    ``total_credits`` uses that same basis as the draft. If Banner reports the
+    term as ineligible, treat its failure text as the answer; never attempt
+    real registration."""
+    return _safe(registration_preview_payload, term, crns, refresh, hours)
 
 
 @mcp.tool(structured_output=False)

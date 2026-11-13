@@ -511,7 +511,6 @@ def test_min_credits_fills_from_remaining_electives(tmp_path):
         ),
         RequirementBlock(
             label="Free elective",
-            pick_n_of=1,
             options=[
                 CourseRef(subject="COS", number="2211"),
                 CourseRef(subject="COS", number="3311"),
@@ -717,3 +716,227 @@ def test_variable_credit_override_suppresses_warning(tmp_path):
     )
     assert not any("variable credit" in item.lower() for item in draft.warnings)
     assert draft.total_credits == 4.0
+
+
+# --------------------------------------------------------------------------- #
+# one-semester correctness regressions
+# --------------------------------------------------------------------------- #
+def _pin_planner(tmp_path, sections, blocks, *, name="Smith, James"):
+    planner = Planner(
+        audit_with(blocks),
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    planner.passed.add(name)
+    return planner
+
+
+def test_pin_of_completed_course_is_not_placed(tmp_path):
+    planner = _pin_planner(
+        tmp_path,
+        [section("1", subject="CYS", number="4245", credits=4.0)],
+        [RequirementBlock(label="Major core", pick_n_of=1, options=[CourseRef(subject="CYS", number="4245")])],
+        name="CYS 4245",
+    )
+    draft = planner.draft("202620", Constraints(required_courses=["CYS 4245"]))
+    assert draft.selections == []
+    assert draft.errors == []
+    assert draft.pinned[0].outcome == "already_completed"
+    assert "already completed" in draft.pinned[0].reason
+    assert draft.total_credits == 0.0
+
+
+def test_pin_of_in_progress_crn_is_not_placed(tmp_path):
+    planner = _pin_planner(
+        tmp_path,
+        [section("1", subject="BIB", number="3020", credits=2.0)],
+        [RequirementBlock(label="Bible", pick_n_of=1, options=[CourseRef(subject="BIB", number="3020")])],
+        name="BIB 3020",
+    )
+    draft = planner.draft("202620", Constraints(required_crns=["1"]))
+    assert draft.selections == []
+    assert draft.errors == []
+    assert draft.pinned[0].outcome == "already_completed"
+    assert draft.pinned[0].crn == "1"
+
+
+def test_zero_low_variable_credit_reserves_high_end(tmp_path):
+    variable = section("23251", subject="COS", number="4841", credits=1.0)
+    variable.credits_low = 0.0
+    variable.credits_high = 4.0
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Independent study",
+                pick_n_of=1,
+                options=[CourseRef(subject="COS", number="4841")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [variable])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=16))
+    assert draft.total_credits == 4.0
+    assert draft.selections[0].credits == 4.0
+    warning = next(item for item in draft.warnings if "variable credit" in item.lower())
+    assert "0-low range" in warning and "reserved 4 cr" in warning
+
+    override = planner.draft(
+        "202620", Constraints(max_credits=16, credit_overrides={"23251": 2.0})
+    )
+    assert override.total_credits == 2.0
+    assert not any("variable credit" in item.lower() for item in override.warnings)
+
+
+def test_min_credits_does_not_refill_a_satisfied_pool(tmp_path):
+    sections = [
+        section(str(index), subject="COS", number=number, credits=1.0)
+        for index, number in enumerate(("2211", "3311", "4411"), start=1)
+    ]
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Major Electives",
+                pick_n_of=1,
+                options=[CourseRef(subject="COS", number=number) for number in ("2211", "3311", "4411")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=16, min_credits=3))
+    assert len(draft.selections) == 1
+    assert draft.total_credits == 1.0
+    assert draft.min_credits_met is False
+
+
+def test_minimum_grade_threshold_is_enforced(tmp_path):
+    text = (
+        "Prerequisites:PQ for COS3001 "
+        "( Course or Test: COS: Computer Science 2015 Minimum Grade of C- "
+        "May not be taken concurrently. )"
+    )
+    provider = PrereqProvider(directory=tmp_path, fetcher=lambda _section: text)
+    expression = provider.expression(section("1"))
+    assert expression.min_grades == {"COS 2015": "C-"}
+
+    blocked, reason = provider.check(section("1"), {"COS 2015"}, {"COS 2015": "D"})
+    assert blocked is False
+    assert "C- or better" in reason
+    assert provider.check(section("1"), {"COS 2015"}, {"COS 2015": "C"}) == (True, "")
+    # No final grade yet (in progress / transfer) is not treated as a failure.
+    assert provider.check(section("1"), {"COS 2015"}, {}) == (True, "")
+
+
+def test_verify_draft_flags_unverified_prereq_and_unplaced(tmp_path):
+    from eagle_flightplan.planner import verify_draft
+
+    provider = PrereqProvider(
+        directory=tmp_path, fetcher=lambda _section: "Permission of the instructor"
+    )
+    planner = Planner(
+        audit_with(
+            [
+                RequirementBlock(label="A", pick_n_of=1, options=[CourseRef(subject="CYS", number="4245")]),
+                RequirementBlock(label="B", pick_n_of=1, options=[CourseRef(subject="CYS", number="4246")]),
+            ]
+        ),
+        {
+            "202620": snapshot(
+                "202620",
+                [
+                    section("1", subject="CYS", number="4245", credits=4.0),
+                    section("2", subject="CYS", number="4246", credits=4.0),
+                ],
+            )
+        },
+        ratings=ratings(tmp_path),
+        prereqs=provider,
+    )
+    draft = planner.draft("202620", Constraints(max_credits=4))
+    assert draft.selections[0].prereq_unverified is True
+    problems = verify_draft(draft, planner.snapshots["202620"])
+    assert any("prerequisite could not be verified" in problem for problem in problems)
+    assert any("requirement(s) could not be placed" in problem for problem in problems)
+
+
+def test_exclude_arrangement_filters_candidates_not_the_pool(tmp_path):
+    sections = [
+        section("1", subject="CYS", number="4855", credits=2.0, start="10:00", end="10:50"),
+        section("2", subject="DAL", number="3255", credits=4.0, start="12:00", end="12:50"),
+    ]
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Additional credits for double major",
+                notes="choose 8 credits from the following",
+                options=[
+                    CourseRef(subject="CYS", number="4855"),
+                    CourseRef(subject="DAL", number="3255"),
+                ],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=16, exclude_arrangement=True))
+    assert [selection.course for selection in draft.selections] == ["DAL 3255"]
+    assert draft.total_credits == 4.0
+
+
+def test_minor_requirement_outranks_gen_ed_but_not_major(tmp_path):
+    gened = RequirementGroup(
+        id="GE",
+        title="Core Curriculum",
+        kind=GroupKind.GENED,
+        blocks=[RequirementBlock(label="Bible", pick_n_of=1, options=[CourseRef(subject="BIB", number="1000")])],
+    )
+    minor = RequirementGroup(
+        id="MIN",
+        title="Minor: Ministry",
+        kind=GroupKind.MINOR,
+        blocks=[RequirementBlock(label="Ministry", pick_n_of=1, options=[CourseRef(subject="MIN", number="1000")])],
+    )
+    audit = Audit(groups=[gened, minor])
+    sections = [
+        section("1", subject="BIB", number="1000", credits=1.0, instructor="Terry, Justin"),
+        section("2", subject="MIN", number="1000", credits=1.0, instructor="Smith, James"),
+    ]
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", sections)},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620", Constraints(max_credits=1))
+    assert [selection.course for selection in draft.selections] == ["MIN 1000"]
+
+
+def test_partially_tba_selection_is_flagged(tmp_path):
+    mixed = section("1", subject="MIN", number="3206", credits=2.0)
+    mixed.meetings.append(Meeting(day=Weekday.FRI, start=None, end=None, kind="WEB"))
+    audit = audit_with(
+        [RequirementBlock(label="Ministry", pick_n_of=1, options=[CourseRef(subject="MIN", number="3206")])]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [mixed])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    draft = planner.draft("202620")
+    assert draft.selections[0].partial_tba is True
+    assert any("unscheduled (TBA) meeting" in warning for warning in draft.warnings)

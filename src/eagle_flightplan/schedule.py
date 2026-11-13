@@ -232,29 +232,49 @@ def _from_minutes(value: int) -> time:
     return time(value // 60, value % 60)
 
 
+LECTURE_KINDS = frozenset({"lecture", "class", "seminar", "discussion"})
+LAB_KINDS = frozenset({"lab", "laboratory", "clinical", "studio"})
+
+
+def _meeting_kinds(section: ScheduleSection) -> set[str]:
+    return {meeting.kind.lower() for meeting in section.meetings if meeting.kind}
+
+
+def _complementary_kinds(a: ScheduleSection, b: ScheduleSection) -> bool:
+    """True for a lecture paired with its lab/clinical/studio component."""
+    kinds_a = _meeting_kinds(a)
+    kinds_b = _meeting_kinds(b)
+    return bool(
+        (kinds_a and kinds_a <= LECTURE_KINDS and kinds_b & LAB_KINDS)
+        or (kinds_b and kinds_b <= LECTURE_KINDS and kinds_a & LAB_KINDS)
+    )
+
+
 def _link_exempt(a: ScheduleSection, b: ScheduleSection) -> bool:
-    """Sections Banner binds together may share a time without conflicting."""
+    """Sections Banner binds together may share a time without conflicting.
+
+    A shared ``link_identifier`` only exempts a lecture/lab (or lecture/clinical)
+    pairing. Two lab or clinical alternatives in the same link group are real
+    alternatives and must still conflict when their times overlap.
+    """
     if a.crn == b.crn:
         return True
-    if a.link_identifier and b.link_identifier and a.link_identifier == b.link_identifier:
+    if (
+        a.link_identifier
+        and b.link_identifier
+        and a.link_identifier == b.link_identifier
+        and _complementary_kinds(a, b)
+    ):
         return True
     # Same course, one lecture + one lab: Banner permits the pairing.
-    if (
+    same_course = bool(
         a.subject
         and a.subject == b.subject
         and a.number
         and a.number == b.number
         and a.term == b.term
-    ):
-        kinds_a = {m.kind.lower() for m in a.meetings if m.kind}
-        kinds_b = {m.kind.lower() for m in b.meetings if m.kind}
-        lecture = {"lecture", "class", "seminar", "discussion"}
-        lab = {"lab", "laboratory", "clinical", "studio"}
-        if (kinds_a and kinds_a <= lecture and kinds_b & lab) or (
-            kinds_b and kinds_b <= lecture and kinds_a & lab
-        ):
-            return True
-    return False
+    )
+    return same_course and _complementary_kinds(a, b)
 
 
 # --------------------------------------------------------------------------- #
@@ -477,6 +497,37 @@ def render_grid(
     return body + "\n" + "\n".join(footer)
 
 
+def _time_overlap(a: Meeting, b: Meeting) -> bool:
+    return _minutes(a.start) < _minutes(b.end) and _minutes(b.start) < _minutes(a.end)
+
+
+def _date_disjoint_pair(a: ScheduleSection, b: ScheduleSection) -> bool:
+    """True when two sections share a weekly slot but never share a date."""
+    for meeting_a in a.scheduled_meetings:
+        for meeting_b in b.scheduled_meetings:
+            if meeting_a.day != meeting_b.day or not _time_overlap(meeting_a, meeting_b):
+                continue
+            if not meeting_a.overlaps_dates(meeting_b):
+                return True
+    return False
+
+
+def grid_note(sections: Iterable[ScheduleSection]) -> str:
+    """Explain the one known grid limitation: slots ignore part-of-term dates."""
+    sections = list(sections)
+    for index, first in enumerate(sections):
+        for second in sections[index + 1 :]:
+            if not _date_disjoint_pair(first, second):
+                continue
+            return (
+                "Grid slots are weekly and ignore part-of-term dates: "
+                f"{first.course_label} ({first.part_of_term or '?'}) and "
+                f"{second.course_label} ({second.part_of_term or '?'}) share a slot "
+                "but never meet on the same date; the conflict list is authoritative."
+            )
+    return ""
+
+
 def grid_legend(
     sections: Iterable[ScheduleSection],
     *,
@@ -487,8 +538,9 @@ def grid_legend(
     """Map every grid label (and overlap slug) to the CRN(s) it represents.
 
     The grid text is unchanged; this is a side table. A cell label is either one
-    course code or ``"A/B"`` for overlapping courses. Multiple sections of the
-    same course share the base code entry.
+    course code or ``"A/B"`` for courses sharing a weekly slot. A slug gets a
+    ``" (different parts of term)"`` suffix when the courses never meet on the
+    same date, so the legend never claims an overlap the conflict list denies.
     """
     sections = list(sections)
     found: dict[str, set[str]] = {}
@@ -509,7 +561,14 @@ def grid_legend(
             ]
             labels = sorted({section.course_label for section in active})
             if len(labels) > 1:
-                found.setdefault("/".join(labels), set()).update(
+                slug = "/".join(labels)
+                if any(
+                    _date_disjoint_pair(first, second)
+                    for index, first in enumerate(active)
+                    for second in active[index + 1 :]
+                ):
+                    slug += " (different parts of term)"
+                found.setdefault(slug, set()).update(
                     section.crn for section in active
                 )
         slot = slot_end

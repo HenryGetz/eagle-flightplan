@@ -49,6 +49,7 @@ def term_label(term: str) -> str:
 class Priority(str, Enum):
     MAJOR_REQUIRED = "major_required"
     MAJOR_POOL = "major_pool"
+    MINOR_REQUIRED = "minor_required"
     GEN_ED_REQUIRED = "gen_ed_required"
     GEN_ED_FILL = "gen_ed_fill"
 
@@ -65,7 +66,62 @@ class Availability(str, Enum):
 CREDIT_STATUSES = frozenset({"completed", "in_progress"})
 
 
+#: Letter-grade order used for prerequisite minimums. Non-letter grades
+#: (transfer ``TR``, ``AP``, pass/fail, in-progress) rank ``None`` and never
+#: fail a minimum-grade check on their own.
+GRADE_RANKS: dict[str, float] = {
+    "A+": 4.3,
+    "A": 4.0,
+    "A-": 3.7,
+    "B+": 3.3,
+    "B": 3.0,
+    "B-": 2.7,
+    "C+": 2.3,
+    "C": 2.0,
+    "C-": 1.7,
+    "D+": 1.3,
+    "D": 1.0,
+    "D-": 0.7,
+    "F": 0.0,
+}
+
+
+def grade_rank(grade: str | None) -> float | None:
+    """Numeric rank for a letter grade; ``None`` for transfer/AP/pass-fail."""
+    if not grade:
+        return None
+    return GRADE_RANKS.get(str(grade).strip().upper())
+
+
+def applied_grades(audit: Audit) -> dict[str, str]:
+    """Course code -> best letter grade for completed/in-progress work.
+
+    Used only for prerequisite minimum-grade checks. When the same course was
+    attempted more than once, the highest rank wins so a successful retake is
+    not hidden by an earlier failure.
+    """
+    grades: dict[str, str] = {}
+    for group in audit.walk():
+        for block in group.blocks:
+            for option in block.options:
+                if option.status not in CREDIT_STATUSES or not option.code or not option.grade:
+                    continue
+                code = option.code.upper().replace("  ", " ")
+                current = grades.get(code)
+                rank = grade_rank(option.grade)
+                if current is None or (
+                    rank is not None and (grade_rank(current) or -1) < rank
+                ):
+                    grades[code] = option.grade.strip().upper()
+    return grades
+
+
 ARRANGEMENT_NUMBERS = {"4841", "4855", "4995"}
+
+
+def is_arranged_number(number: str | None) -> bool:
+    """True for the Banner course numbers UNW reserves for arranged credit."""
+    return str(number or "").strip() in ARRANGEMENT_NUMBERS
 
 
 def availability_of(section: Section, current_term: str | None = None) -> Availability:
@@ -167,10 +223,11 @@ def _priority(
     optional = _is_optional(group_title, label, kind, min_credits)
     if kind is GroupKind.MAJOR:
         return Priority.MAJOR_POOL if optional else Priority.MAJOR_REQUIRED
-    # A minor is a real requirement, but it must never outrank the major or
-    # general-education requirements when the credit budget is tight.
+    # A minor is a real requirement with its own bucket: it must never outrank
+    # the major or general-education requirements when the credit budget is
+    # tight (optional minor pools remain filler).
     if kind is GroupKind.MINOR:
-        return Priority.GEN_ED_FILL if optional else Priority.GEN_ED_REQUIRED
+        return Priority.GEN_ED_FILL if optional else Priority.MINOR_REQUIRED
     if optional:
         return Priority.GEN_ED_FILL
     # Everything else is a named general-education/degree requirement. No
@@ -188,11 +245,21 @@ def _parse_attribute_codes(ref: CourseRef) -> list[str]:
     return codes
 
 
-def _needs_arrangement(label: str, targets: list[CourseKey]) -> bool:
+def _needs_arrangement(
+    label: str,
+    targets: list[CourseKey],
+    wildcards: Sequence[str] = (),
+) -> bool:
+    """True when the block itself is arranged (not merely one option in a pool)."""
     lowered = label.lower()
     if any(word in lowered for word in ("internship", "research", "capstone", "directed study", "senior project")):
         return True
-    return any(target.number in ARRANGEMENT_NUMBERS for target in targets)
+    if wildcards:
+        # A subject wildcard (e.g. ``DAL *``) adds non-arranged options.
+        return False
+    return bool(targets) and all(
+        target.number in ARRANGEMENT_NUMBERS for target in targets
+    )
 
 
 def requirements_from_audit(audit: Audit) -> list[Requirement]:
@@ -220,7 +287,9 @@ def requirements_from_audit(audit: Audit) -> list[Requirement]:
             credit_match = CREDITS_IN_NOTES.search(block.notes or "")
             min_credits = None
             if credit_match:
-                min_credits = float(credit_match.group("high") or credit_match.group("low"))
+                # "choose 3-4 credits" needs 3, not 4: reserve the minimum and
+                # let the extra credit be optional.
+                min_credits = float(credit_match.group("low"))
             if not targets and not attributes and not wildcards:
                 continue
             if block.pick_n_of is None and min_credits is None and applied:
@@ -257,7 +326,7 @@ def requirements_from_audit(audit: Audit) -> list[Requirement]:
                     major_specific=group.kind is GroupKind.MAJOR,
                     optional=_is_optional(group.title, block.label, group.kind, min_credits),
                     priority=_priority(group.title, block.label, group.kind, min_credits, targets, attributes),
-                    requires_arrangement=_needs_arrangement(block.label, targets),
+                    requires_arrangement=_needs_arrangement(block.label, targets, wildcards),
                     notes=block.notes,
                 )
             )

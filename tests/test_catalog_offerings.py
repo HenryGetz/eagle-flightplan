@@ -295,3 +295,45 @@ def test_additional_credits_pool_stays_optional():
     requirement = requirements_from_audit(audit)[0]
     assert requirement.optional is True
     assert requirement.priority is Priority.MAJOR_POOL
+
+
+def test_choose_three_to_four_credits_reserves_the_minimum():
+    audit = Audit(
+        groups=[
+            RequirementGroup(
+                id="RA3",
+                title="THEOLOGICAL PHILOSOPHY - 3-4 credits",
+                kind=GroupKind.GENED,
+                blocks=[
+                    RequirementBlock(
+                        label="Theological Philosophy",
+                        notes="choose 3-4 credits from the following",
+                        options=[CourseRef(subject="BIB", number="4360", status="option")],
+                    )
+                ],
+            )
+        ]
+    )
+    requirement = requirements_from_audit(audit)[0]
+    assert requirement.min_credits == 3.0
+
+
+def test_minor_requirement_has_its_own_priority_bucket():
+    audit = Audit(
+        groups=[
+            RequirementGroup(
+                id="RA4",
+                title="Minor: Ministry",
+                kind=GroupKind.MINOR,
+                blocks=[
+                    RequirementBlock(
+                        label="Ministry Foundations",
+                        pick_n_of=1,
+                        options=[CourseRef(subject="MIN", number="1007", status="option")],
+                    )
+                ],
+            )
+        ]
+    )
+    requirement = requirements_from_audit(audit)[0]
+    assert requirement.priority is Priority.MINOR_REQUIRED

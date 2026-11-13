@@ -621,7 +621,7 @@ def test_add_success_returns_read_back_diff(monkeypatch) -> None:
     )
     monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: add_target_snapshot())
     # Keep this test hermetic: the prerequisite gate is covered separately.
-    monkeypatch.setattr(mcp_server, "_passed_codes_or_none", lambda: None)
+    monkeypatch.setattr(mcp_server, "_audit_prereq_gate", lambda: (None, None))
 
     payload = mcp_server.plan_add_guarded(
         "202620", "59021", True, crn="22449"
@@ -792,7 +792,7 @@ def test_plan_add_refuses_missing_prereq_before_any_post(monkeypatch) -> None:
         lambda: real_plan_client(SSBClient(http, min_interval=0)),
     )
     monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: add_target_snapshot())
-    monkeypatch.setattr(mcp_server, "_passed_codes_or_none", lambda: set())
+    monkeypatch.setattr(mcp_server, "_audit_prereq_gate", lambda: (set(), {}))
     monkeypatch.setattr(
         "eagle_flightplan.banner.search.load_snapshot", lambda term: add_target_snapshot()
     )
@@ -801,7 +801,7 @@ def test_plan_add_refuses_missing_prereq_before_any_post(monkeypatch) -> None:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def check(self, section, passed):
+        def check(self, section, passed, grades=None):
             return False, "needs COS 2099"
 
     monkeypatch.setattr("eagle_flightplan.planner.PrereqProvider", BlockingPrereq)
@@ -911,6 +911,8 @@ async def test_new_draft_and_rating_arguments_are_in_the_schema() -> None:
     ):
         assert key in properties, key
     assert properties["hours"]["anyOf"][0]["type"] == "object"
+    for key in ("credits", "pins", "courses"):
+        assert key in properties, key
     semester_props = tools["unw_semester_plan"].input_schema["properties"]
     for key in ("max_credits", "required_courses", "credits", "pins", "courses"):
         assert key in semester_props, key
@@ -1410,3 +1412,131 @@ def test_semester_plan_aliases_match_canonical_arguments(monkeypatch) -> None:
     assert alias["aliases"]["credits"] == 16
     assert alias["aliases"]["pins"] == pins
     assert alias["aliases"]["courses"] == courses
+
+
+def test_conflicts_payload_uses_the_planning_credit_basis(monkeypatch) -> None:
+    a = Section(
+        crn="1", term="202620", subject="COS", number="4995", section="01",
+        title="Internship", credits_low=0.0, credits_high=4.0,
+        seats_available=5, open=True,
+        meetings=[Meeting(day=Weekday.MON, start="10:00", end="11:00")],
+    )
+    snapshot = TermSnapshot(
+        meta=SnapshotMeta(term="202620", fetched_at=datetime.now(UTC), source="cache"),
+        sections=[a],
+    )
+    monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: snapshot)
+    default = mcp_server.conflicts_payload("202620", ["1"])
+    assert default["total_credits"] == 4.0
+    overridden = mcp_server.conflicts_payload("202620", ["1"], hours={"1": 2.0})
+    assert overridden["total_credits"] == 2.0
+    assert overridden["hours"] == {"1": 2.0}
+
+
+def test_conflicts_payload_flags_partial_tba(monkeypatch) -> None:
+    a = Section(
+        crn="1", term="202620", subject="MIN", number="3206", section="01",
+        title="Ministry", credits_low=2.0, seats_available=5, open=True,
+        meetings=[
+            Meeting(day=Weekday.MON, start="10:00", end="11:00"),
+            Meeting(day=Weekday.FRI, start=None, end=None, kind="WEB"),
+        ],
+    )
+    snapshot = TermSnapshot(
+        meta=SnapshotMeta(term="202620", fetched_at=datetime.now(UTC), source="cache"),
+        sections=[a],
+    )
+    monkeypatch.setattr(mcp_server, "_snapshot", lambda term, refresh=False: snapshot)
+    payload = mcp_server.conflicts_payload("202620", ["1"])
+    assert payload["partial_tba_crns"] == ["1"]
+    assert payload["partial_tba"][0]["partial_tba"] is True
+    assert payload["unscheduled"] == []
+
+
+def test_plan_draft_accepts_boundary_aliases(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_draft(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"ok": True, "draft": {}}
+
+    monkeypatch.setattr(mcp_server, "draft_payload", fake_draft)
+    mcp_server.unw_plan_draft(
+        "202620", max_credits=16, credits=18, pins=["MIN 3206"], courses=["COS 4841"]
+    )
+    args = calls[0]["args"]
+    assert args[1] == 18
+    assert args[10] == ["MIN 3206", "COS 4841"]
+
+
+def test_next_action_empty_plan_does_not_recommend_preview() -> None:
+    out = mcp_server._semester_next_action(
+        {"total_credits": 0.0, "min_credits": 0, "min_credits_met": True,
+         "pin_errors": [], "verified": True, "verify_problems": []},
+        {"eligible": False, "start": "2026-11-16T08:30:00-06:00",
+         "end": "2027-03-22T23:59:00-05:00", "reason": "Term not eligible"},
+        0,
+        [],
+        {"plans": []},
+        term="202620",
+        crns=[],
+        tba_crns=[],
+        prereq_unverified_crns=[],
+        now=datetime(2026, 11, 13, tzinfo=UTC),
+    )
+    assert "No sections fit" in out
+    assert "unw_register_preview" not in out
+
+
+def test_next_action_reports_an_expired_window() -> None:
+    out = mcp_server._semester_next_action(
+        {"total_credits": 12.0, "min_credits": 0, "min_credits_met": True,
+         "pin_errors": [], "verified": True, "verify_problems": []},
+        {"eligible": False, "start": "2026-04-20T08:30:00-05:00",
+         "end": "2026-10-28T23:59:00-05:00", "reason": "no ticket"},
+        0,
+        [],
+        {"plans": []},
+        term="202610",
+        crns=["12546"],
+        tba_crns=[],
+        prereq_unverified_crns=[],
+        now=datetime(2026, 11, 13, tzinfo=UTC),
+    )
+    assert "closed on 2026-10-28" in out
+    assert "opens" not in out
+
+
+def test_next_action_reports_a_future_ticket_and_open_hold() -> None:
+    future = mcp_server._semester_next_action(
+        {"total_credits": 12.0, "min_credits": 0, "min_credits_met": True,
+         "pin_errors": [], "verified": True, "verify_problems": []},
+        {"eligible": False, "start": "2026-11-16T08:30:00-06:00",
+         "end": "2027-03-22T23:59:00-05:00", "reason": "Term not eligible"},
+        0,
+        [],
+        {"plans": []},
+        term="202620",
+        crns=["1"],
+        tba_crns=[],
+        prereq_unverified_crns=[],
+        now=datetime(2026, 11, 13, tzinfo=UTC),
+    )
+    assert "Ticket assigned; opens" in future
+
+    held = mcp_server._semester_next_action(
+        {"total_credits": 12.0, "min_credits": 0, "min_credits_met": True,
+         "pin_errors": [], "verified": True, "verify_problems": []},
+        {"eligible": False, "start": "2026-01-01T08:00:00-06:00",
+         "end": "2027-01-01T23:59:00-06:00", "reason": "advising hold"},
+        0,
+        [],
+        {"plans": []},
+        term="202620",
+        crns=["1"],
+        tba_crns=[],
+        prereq_unverified_crns=[],
+        now=datetime(2026, 11, 13, tzinfo=UTC),
+    )
+    assert "Banner reports the term ineligible" in held
+    assert "advising hold" in held

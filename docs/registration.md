@@ -94,7 +94,7 @@ eagle-flightplan snipe --term 202620 --crn 22449 --crn 23251 --mode seats --inte
 ```
 
 * **Targets first.** From a plan name (its CRNs, ordered by the planner's priority
-  classes: major_required → major_pool → gen_ed_required → gen_ed_fill) or explicit
+  classes: major_required → major_pool → minor_required → gen_ed_required → gen_ed_fill) or explicit
   `--crn` values. The resolved table is printed before anything happens.
 * **mode=window**: reads the personal ticket (prepare page), sleeps until
   `start + offset - prewarm`, launches the browser early, polls eligibility every

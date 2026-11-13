@@ -16,6 +16,7 @@ from .catalog import (
     Availability,
     Requirement,
     applied_codes,
+    applied_grades,
     availability_of,
     requirements_from_audit,
     resolve,
@@ -87,6 +88,7 @@ def _candidate_rows(
     passed: set[str],
     ratings: RatingProvider,
     prereqs: PrereqProvider,
+    grades: dict[str, str] | None = None,
 ) -> tuple[list[CandidateRow], str]:
     resolution = resolve(
         requirement,
@@ -99,7 +101,7 @@ def _candidate_rows(
     for section in resolution.candidates:
         name = section.faculty[0].name if section.faculty else "Staff"
         rating = ratings.get(name)
-        ok, note = prereqs.check(section, passed)
+        ok, note = prereqs.check(section, passed, grades)
         rows.append(
             CandidateRow(
                 crn=section.crn,
@@ -204,6 +206,7 @@ def build_brief(
     ratings = ratings or RatingProvider()
     prereqs = prereqs or PrereqProvider()
     passed = applied_codes(audit)
+    grades = applied_grades(audit)
     requirements = requirements_from_audit(audit)
     outstanding = [requirement for requirement in requirements if not requirement.satisfied]
     planner = Planner(
@@ -222,7 +225,9 @@ def build_brief(
 
     blocks: list[RequirementBlock] = []
     for requirement in outstanding:
-        rows, empty_reason = _candidate_rows(requirement, snapshot, passed, ratings, prereqs)
+        rows, empty_reason = _candidate_rows(
+            requirement, snapshot, passed, ratings, prereqs, grades
+        )
         chosen = next((selection for selection in draft.selections if selection.requirement_id == requirement.id), None)
         chosen_section = snapshot.by_crn(chosen.crn) if chosen else None
         if chosen is not None:

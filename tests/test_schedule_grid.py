@@ -105,3 +105,65 @@ def test_grid_legend_maps_base_codes_and_overlap_slugs():
     assert legend["CYS 4245"] == ["1001"]
     assert legend["BIB 4360"] == ["1002"]
     assert legend["BIB 4360/CYS 4245"] == ["1001", "1002"]
+
+
+def test_grid_legend_marks_date_disjoint_parts_and_note():
+    from eagle_flightplan.schedule import find_conflicts, grid_note
+
+    first = ScheduleSection(
+        crn="9001",
+        subject="ART",
+        number="1005",
+        title="Art",
+        part_of_term="Q4",
+        meetings=(
+            Meeting(
+                day=Weekday.MON,
+                start="1125",
+                end="1230",
+                start_date="2027-03-15",
+                end_date="2027-05-13",
+            ),
+        ),
+    )
+    second = ScheduleSection(
+        crn="9002",
+        subject="BIA",
+        number="1015",
+        title="Bible",
+        part_of_term="Q3",
+        meetings=(
+            Meeting(
+                day=Weekday.MON,
+                start="1125",
+                end="1230",
+                start_date="2027-01-11",
+                end_date="2027-03-03",
+            ),
+        ),
+    )
+    assert find_conflicts([first, second]) == []
+    legend = grid_legend([first, second])
+    assert legend["ART 1005/BIA 1015 (different parts of term)"] == ["9001", "9002"]
+    assert "ART 1005/BIA 1015" not in legend
+    note = grid_note([first, second])
+    assert "ignore part-of-term dates" in note
+    assert "ART 1005 (Q4)" in note
+
+
+def test_grid_note_empty_for_same_part_sections():
+    from eagle_flightplan.schedule import grid_note
+
+    first = ScheduleSection(
+        crn="9101",
+        subject="BIB",
+        number="4360",
+        meetings=(Meeting(day=Weekday.MON, start="1000", end="1050"),),
+    )
+    second = ScheduleSection(
+        crn="9102",
+        subject="CYS",
+        number="4245",
+        meetings=(Meeting(day=Weekday.MON, start="1000", end="1050"),),
+    )
+    assert grid_note([first, second]) == ""

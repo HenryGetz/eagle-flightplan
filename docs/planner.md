@@ -71,13 +71,17 @@ Hard constraints
 5. `required_crns`/`required_courses` (draft only) are placed before requirement
    buckets. An unavailable, excluded, conflicting, prerequisite-blocked or
    over-budget pin is reported in `pinned` and `errors`, and the draft response
-   is `ok: false`; it is never dropped silently.
+   is `ok: false`; it is never dropped silently. A pin whose course is already
+   completed or in progress reports `already_completed` (no credits, no error).
 6. `min_credits` tops up from remaining elective/optional candidates after the
    normal pass. If it still cannot be met, `min_credits_met` is false and a
    warning names the shortfall; no course is invented.
 7. `excluded_crns`/`excluded_courses` remove candidates; `credit_overrides`
    (CRN → hours) sets the credits reserved for a variable-credit section.
-   Variable-credit sections otherwise reserve the low end of their range.
+   Variable-credit sections otherwise reserve the low end of their range; a
+   0-low range reserves the high end (never zero) until hours are set.
+   `exclude_arrangement` filters arranged candidates (4841/4855/4995), not the
+   whole requirement pool.
 
 Ranking (deterministic total order)
 
@@ -86,6 +90,9 @@ key = (unrated?, -effective_rating, -seats, -credits, tba?, start_time, crn)
 effective_rating = rating × 0.85   when num_ratings < 3
 ```
 
+* Priority buckets, in budget order: `major_required` → `major_pool` →
+  `minor_required` → `gen_ed_required` → `gen_ed_fill` (optional minor pools are
+  filler).
 * Rated instructors always beat unrated ones; unrated is **not** 0.0 — the
   selection is labelled `unrated` with the RMP reason ("no RMP record").
 * `avg_difficulty`, `num_ratings` and match confidence are carried on every
@@ -108,8 +115,11 @@ recorded in `Selection.covers` and no duplicate section is added.
   `no_catalog`, never invented).
 
 `verify_draft(draft, snapshot)` re-checks every CRN exists, open sections have
-seats, credits add up and `find_conflicts` is empty. `scripts/draft.py` fails
-with a non-zero exit if it does not pass.
+seats, credits add up, `find_conflicts` is empty, prerequisites are verified and
+every requirement was placed. A plan with unknown prerequisites or unplaced
+requirements therefore reports `verified: false` (`verified_scope` says it is an
+internal consistency check, not a registration guarantee). `scripts/draft.py`
+fails with a non-zero exit if it does not pass.
 
 ## Real result — Spring 2027 (202620)
 

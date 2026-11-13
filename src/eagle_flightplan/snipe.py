@@ -234,8 +234,9 @@ def resolve_targets(
     order = {
         "major_required": 0,
         "major_pool": 1,
-        "gen_ed_required": 2,
-        "gen_ed_fill": 3,
+        "minor_required": 2,
+        "gen_ed_required": 3,
+        "gen_ed_fill": 4,
     }
     ranked: list[tuple[int, int, Target]] = []
     seen: set[str] = set()

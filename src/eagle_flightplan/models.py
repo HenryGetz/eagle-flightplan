@@ -80,7 +80,12 @@ class Section(BaseModel):
 
         Variable-credit sections reserve the low end by default; an explicit
         override can raise or lower it. Fixed-credit sections are unaffected.
+        A ``0-high`` section is the exception: reserving zero would let a real
+        section slip past ``max_credits``, so it reserves the high end until the
+        caller supplies an explicit hours override.
         """
+        if self.credits_low == 0 and self.credits_high:
+            return self.credits_high
         return self.credits_low if self.credits_low is not None else self.credits_high
 
     @property
@@ -107,6 +112,13 @@ class Section(BaseModel):
     @property
     def unscheduled(self) -> bool:
         return not any(meeting.scheduled for meeting in self.meetings)
+
+    @property
+    def partial_tba(self) -> bool:
+        """True when some meetings have times and others are TBA/async."""
+        return any(not meeting.scheduled for meeting in self.meetings) and any(
+            meeting.scheduled for meeting in self.meetings
+        )
 
     @property
     def days(self) -> list[Weekday]:

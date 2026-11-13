@@ -216,3 +216,19 @@ def test_missing_date_range_is_treated_as_overlapping():
     )
     undated = section("322", [Meeting(day="Mon", start="1000", end="1200")])
     assert len(conflicts(dated, undated)) == 1
+
+
+def test_two_lab_alternatives_with_the_same_link_still_conflict():
+    first = section("701", mwf(kind="Lab"), link_identifier="A3")
+    second = section("702", mwf(kind="Lab"), link_identifier="A3")
+    assert len(conflicts(first, second)) == 3
+
+
+def test_linked_lecture_and_clinical_are_exempt():
+    lecture = section("703", mwf(kind="Lecture"), link_identifier="E2")
+    clinical = section(
+        "704",
+        [Meeting(day=Weekday.TUE, start="0630", end="1430", kind="Clinical")],
+        link_identifier="E2",
+    )
+    assert conflicts(lecture, clinical) == []

@@ -343,14 +343,15 @@ def setup(
 # --------------------------------------------------------------------------- #
 # plan writes: explicit opt-in only
 # --------------------------------------------------------------------------- #
-def _passed_codes() -> set[str] | None:
+def _audit_gate() -> tuple[set[str] | None, dict[str, str] | None]:
     try:
         from .audit import AuditClient
-        from .catalog import applied_codes
+        from .catalog import applied_codes, applied_grades
 
-        return applied_codes(AuditClient().audit())
+        audit = AuditClient().audit()
+        return applied_codes(audit), applied_grades(audit)
     except Exception:  # noqa: BLE001 - validation degrades to "prereq unchecked"
-        return None
+        return None, None
 
 
 def _require_yes(description: str, yes: bool) -> None:
@@ -384,11 +385,11 @@ def plan_add(
 ) -> None:
     _require_yes(f"add CRNs {', '.join(crn)} to plan {plan_id} in {term}", yes)
     client = PlanClient()
-    passed = _passed_codes()
+    passed, grades = _audit_gate()
     for item in crn:
         try:
             course = client.add_course(
-                plan_id, term, crn=item, force=force, passed_codes=passed
+                plan_id, term, crn=item, force=force, passed_codes=passed, grades=grades
             )
         except PlanWriteBlocked as exc:
             console.print("[red]blocked:[/]")
@@ -396,7 +397,7 @@ def plan_add(
                 console.print(f"  - {issue.message}")
             raise typer.Exit(code=2) from exc
         console.print(f"added {item} -> {course.code} ({course.credits:g} cr)")
-    for issue in client.validate(plan_id, term, passed_codes=passed):
+    for issue in client.validate(plan_id, term, passed_codes=passed, grades=grades):
         console.print(f"[yellow]warning:[/] {issue.message}")
 
 

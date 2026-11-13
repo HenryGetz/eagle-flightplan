@@ -90,6 +90,7 @@ def validate_sections(
     sections: list[SnapshotSection],
     *,
     passed_codes: set[str] | None = None,
+    grades: dict[str, str] | None = None,
     current_term: str = "202610",
     prereqs: object | None = None,
 ) -> list[PlanIssue]:
@@ -117,7 +118,7 @@ def validate_sections(
 
             provider = _PrereqProvider()
         for section in sections:
-            ok, why = provider.check(section, passed_codes)
+            ok, why = provider.check(section, passed_codes, grades)
             if ok is False:
                 issues.append(
                     PlanIssue(kind="prereq", message=f"{section.code} CRN {section.crn}: {why}", hard=True)
@@ -366,7 +367,12 @@ class PlanClient:
         return current
 
     def validate(
-        self, plan_id: int, term: str, *, passed_codes: set[str] | None = None
+        self,
+        plan_id: int,
+        term: str,
+        *,
+        passed_codes: set[str] | None = None,
+        grades: dict[str, str] | None = None,
     ) -> list[PlanIssue]:
         from .search import load_snapshot
         from ..planner import PrereqProvider as _PrereqProvider
@@ -379,7 +385,11 @@ class PlanClient:
         present = [section for section in sections if section is not None]
         provider = _PrereqProvider() if passed_codes is not None else None
         return validate_sections(
-            present, passed_codes=passed_codes, current_term=self.current_term, prereqs=provider
+            present,
+            passed_codes=passed_codes,
+            grades=grades,
+            current_term=self.current_term,
+            prereqs=provider,
         )
 
     def add_course(
@@ -393,6 +403,7 @@ class PlanClient:
         allow_duplicate: bool = False,
         force: bool = False,
         passed_codes: set[str] | None = None,
+        grades: dict[str, str] | None = None,
     ) -> PlanCourse:
         """Add a course (subject+number) or a specific section (CRN) to a plan.
 
@@ -437,6 +448,7 @@ class PlanClient:
                     issues = validate_sections(
                         existing + [candidate],
                         passed_codes=passed_codes,
+                        grades=grades,
                         current_term=self.current_term,
                         prereqs=provider,
                     )
