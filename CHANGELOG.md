@@ -6,7 +6,53 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `unw_planning_intake` (22 tools): a READ-ONLY planning interview returning the
+  audit facts (programs, catalog year, credits, anticipated graduation, standing,
+  `holds: null` = unknown), the current/next term with the personal ticket
+  start/end/eligibility, a structured `questions` list (credit load, blocked days,
+  time window, delivery, RMP priority, summer, graduation target, work hours,
+  program confirmation, retakes, prior credit, holds, instructors to avoid),
+  `defaults_used` labelling every server default as an assumption, per-section
+  `source_errors`, and `next_step`. The server instructions now tell agents to
+  call it before planning beyond the current term.
+- `unw_roadmap` accepts the full constraint set (`min_credits`, `avoid_days`,
+  `earliest`/`latest`, `avoid_instructors`, `exclude_arrangement`, `delivery`,
+  `required_courses`/`required_crns`, `hours`, `assume_completed`,
+  `target_term`) and returns `assumptions` (field/value/source=default|requested),
+  `preferences_missing` (questions still to ask), `constraints` (what was applied)
+  and `graduation_target` (known remaining credits per planned term, or that the
+  target lies beyond the horizon). Pins apply to the start term only.
+- `assume_completed` on `Constraints`, `unw_plan_draft`, `unw_semester_plan` and
+  `unw_roadmap`: course codes already completed or planned in an earlier term are
+  merged into the prerequisite set, so term-by-term drafting neither duplicates a
+  course already planned for another term nor blocks its dependents.
+- `delivery` preference (`any`/`online`/`in_person`) filters sections by Banner's
+  `instructionalMethod`/campus (hybrid counts as in-person); draft selections now
+  expose `campus`, `instructional_method` and `delivery`.
+- Offering history reports `observed_count` and `weak_evidence` and a new
+  `insufficient_history` pattern; a season label requires two observations.
+
+### Changed
+
+- `unw_offering_matrix` ignores unpublished terms (0 sections). They are listed in
+  `terms_without_catalog` instead of counting as "not offered", so Fall 2028's
+  empty catalog can no longer make a course look fall-only or absent.
+- Unpublished terms are `no_catalog` everywhere: `unw_roadmap` marks, skips and
+  lists them, and `unw_plan_draft`/`unw_semester_plan` return
+  `ok: false` + `error_type: "NoCatalog"` instead of an
+  `ok: true` 0-credit plan with "none of X is offered" reasons.
+
 ### Fixed
+
+- `unw_roadmap` honors `include_summer`: it is now forwarded to the planner, so
+  summer terms are planned when the flag is true (previously the flag was echoed
+  but every summer term was silently dropped). Explicitly requested summer terms
+  with `include_summer=false` are reported in `risks` instead of vanishing.
+- `constraints_unenforced` / `all_selections_unscheduled`: day, time and delivery
+  preferences that could not be evaluated because every placed section is TBA are
+  named in the warning and payload instead of being echoed as honored.
 
 - One-semester correctness: pins of a completed or in-progress course report
   `already_completed` and fail (`ok: false` + named `pin_errors`); an explicit

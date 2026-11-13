@@ -236,7 +236,7 @@ def main(
     if roadmap:
         snapshots = load_snapshots(sorted(set(ROADMAP_TERMS + [term])), refresh_terms)
         planner = Planner(audit, snapshots)
-        result = planner.roadmap(ROADMAP_TERMS, constraints)
+        result = planner.roadmap(ROADMAP_TERMS, constraints, include_summer=True)
         (CAPTURES / "roadmap.md").write_text(roadmap_markdown(result), encoding="utf-8")
         (CAPTURES / "roadmap.json").write_text(result.model_dump_json(indent=1), encoding="utf-8")
         for entry in result.terms:

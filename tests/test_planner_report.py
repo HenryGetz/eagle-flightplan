@@ -116,9 +116,11 @@ def test_brief_empty_requirement_explains_why(tmp_path, monkeypatch):
             )
         ]
     )
+    # A published term with an unrelated section: CYS 4466 is genuinely absent.
+    # An empty snapshot would mean "catalog unpublished" (NoCatalogError).
     snapshot = TermSnapshot(
         meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),
-        sections=[],
+        sections=[section("1", instructor="Other, Prof")],
     )
     brief = build_brief(
         "202620",
@@ -142,7 +144,7 @@ def test_brief_roadmap_keeps_legitimately_empty_other_term_snapshots(tmp_path, m
         audit=Audit(),
         snapshot=TermSnapshot(
             meta=SnapshotMeta(term="202620", fetched_at=datetime.now(timezone.utc)),
-            sections=[],
+            sections=[section("1", instructor="Other, Prof")],
         ),
         include_roadmap=True,
         ratings=RatingProvider(path=tmp_path / "r.json", lookup=lambda name: RatingInfo(name=name)),

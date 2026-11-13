@@ -38,6 +38,7 @@ EXPECTED_TOOLS = {
     "unw_course",
     "unw_offering_matrix",
     "unw_plan_draft",
+    "unw_planning_intake",
     "unw_profile",
     "unw_ratings",
     "unw_register_preview",
@@ -314,7 +315,7 @@ async def test_tool_count_names_and_descriptions() -> None:
     tools = await mcp_server.mcp.list_tools()
     names = {tool.name for tool in tools}
     assert names == EXPECTED_TOOLS
-    assert len(tools) == 21
+    assert len(tools) == 22
     for tool in tools:
         assert tool.description and tool.description.strip(), tool.name
         assert tool.input_schema.get("type") == "object"

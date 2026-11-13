@@ -76,10 +76,13 @@ from .models import Section
 from .planner import (
     Constraints,
     DraftPlan,
+    NoCatalogError,
     Planner,
     PrereqProvider,
     RatingInfo,
     RatingProvider,
+    Roadmap,
+    delivery_class,
     verify_draft,
 )
 from .rmp import RMPError
@@ -209,7 +212,14 @@ def _error(exc: Exception) -> dict[str, Any]:
     """Turn an exception into an actionable tool response (never a traceback)."""
     kind = type(exc).__name__
     hint = ""
-    if isinstance(exc, auth.SessionExpiredError):
+    if isinstance(exc, NoCatalogError):
+        kind = "NoCatalog"
+        hint = (
+            "That term's catalog is not published yet (Banner returns zero sections). "
+            "Plan the terms that are published, or wait for publication; never report "
+            "unpublished terms as missing courses."
+        )
+    elif isinstance(exc, auth.SessionExpiredError):
         hint = f"The Banner/Degree Works session is dead. Run: {FIX_COMMAND}"
     elif isinstance(exc, PlanError):
         hint = (
@@ -1109,11 +1119,18 @@ def build_constraints(
     excluded_courses: Sequence[str] | str | None = None,
     credit_overrides: dict[str, float] | None = None,
     allow_repeat: bool = False,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
 ) -> Constraints:
     if max_credits <= 0:
         raise ValueError("max_credits must be greater than 0.")
     if min_credits < 0:
         raise ValueError("min_credits must be 0 or greater.")
+    delivery_value = (delivery or "any").strip().lower()
+    if delivery_value not in {"any", "online", "in_person"}:
+        raise ValueError(
+            f"Unknown delivery {delivery!r}; expected one of: any, online, in_person."
+        )
     days = [_parse_day(day) for day in _norm_list(avoid_days)]
     instructors = _norm_names(avoid_instructors) if avoid_instructors is not None else []
     overrides: dict[str, float] = {}
@@ -1139,6 +1156,8 @@ def build_constraints(
         excluded_courses=_norm_list(excluded_courses),
         credit_overrides=overrides,
         allow_repeat=bool(allow_repeat),
+        assume_completed=_norm_list(assume_completed),
+        delivery=delivery_value,  # type: ignore[arg-type]
     )
 
 
@@ -1190,6 +1209,9 @@ def _draft_selection_payload(selection, section: Section | None = None) -> dict:
         "seats": selection.seats,
         "open": selection.open,
         "availability": selection.availability,
+        "campus": section.campus if section is not None else None,
+        "instructional_method": section.instructional_method if section is not None else None,
+        "delivery": delivery_class(section) if section is not None else None,
         "verify_at_registration": selection.verify_at_registration,
         "prereq_unverified": selection.prereq_unverified,
         "partial_tba": selection.partial_tba,
@@ -1225,6 +1247,19 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
         "pinned": [pin.model_dump() for pin in draft.pinned],
         "pin_errors": list(draft.errors),
         "credit_overrides": dict(draft.credit_overrides),
+        "assumed_completed": list(draft.assumed_completed),
+        "constraints_unenforced": list(draft.constraints_unenforced),
+        "all_selections_unscheduled": draft.all_selections_unscheduled,
+        "tba_crns": [
+            str(selection.crn)
+            for selection in draft.selections
+            if snapshot is not None
+            and (section := snapshot.by_crn(selection.crn)) is not None
+            and section.unscheduled
+        ],
+        "partial_tba_crns": [
+            str(selection.crn) for selection in draft.selections if selection.partial_tba
+        ],
         "unplaced": [
             {
                 "requirement_id": item.requirement_id,
@@ -1273,6 +1308,8 @@ def draft_payload(
     exclude_arrangement: bool = False,
     hours: dict[str, float] | None = None,
     allow_repeat: bool = False,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
 ) -> dict:
     if profile not in {"max_rated"}:
         raise ValueError(
@@ -1293,12 +1330,20 @@ def draft_payload(
         excluded_courses=exclude_courses,
         credit_overrides=hours,
         allow_repeat=allow_repeat,
+        assume_completed=assume_completed,
+        delivery=delivery,
     )
     terms = [term]
     summer = _next_summer(term) if include_summer else None
     if summer:
         terms.append(summer)
     planner, snapshots, audit, _raw, current_term = _planner(terms, refresh)
+    if len(snapshots[term]) == 0:
+        raise NoCatalogError(
+            f"{term_label(term)} ({term}) has no published catalog (0 sections). "
+            "Do not plan it: pick a published term, or wait for Banner to publish it. "
+            "An unpublished term is not evidence that its courses are unavailable."
+        )
     with _BANNER_LOCK:
         draft = planner.draft(term, constraints)
     payload: dict[str, Any] = {
@@ -1320,6 +1365,8 @@ def draft_payload(
             "exclude_arrangement": constraints.exclude_arrangement,
             "hours": dict(constraints.credit_overrides),
             "allow_repeat": constraints.allow_repeat,
+            "assume_completed": list(constraints.assume_completed),
+            "delivery": constraints.delivery,
         },
         "current_term": current_term,
         "student": audit.student_name,
@@ -1554,6 +1601,8 @@ def _semester_plan_payload_unlocked(
     courses: Sequence[str] | str | None = None,
     include_banner_plans: bool = True,
     allow_repeat: bool = False,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
 ) -> dict:
     """One-call semester report: draft + conflicts + ticket + Banner plans.
 
@@ -1583,6 +1632,8 @@ def _semester_plan_payload_unlocked(
         exclude_arrangement=exclude_arrangement,
         hours=hours,
         allow_repeat=allow_repeat,
+        assume_completed=assume_completed,
+        delivery=delivery,
     )
     requested = draft.get("requested") or {}
     hours_map = {
@@ -1760,11 +1811,15 @@ def _semester_plan_payload_unlocked(
         "rated_picks": body.get("rated_picks"),
         "unrated_picks": body.get("unrated_picks"),
         "requested": requested,
+        "constraints_unenforced": body.get("constraints_unenforced", []),
+        "all_selections_unscheduled": body.get("all_selections_unscheduled", False),
+        "assumed_completed": body.get("assumed_completed", []),
         "assumptions": {
             "allow_repeat": bool(requested.get("allow_repeat", allow_repeat)),
             "max_credits": requested.get("max_credits", max_credits),
             "min_credits": requested.get("min_credits", min_credits),
             "hours": hours_map,
+            "delivery": requested.get("delivery", delivery),
         },
         "catalog": draft.get("catalog"),
     }
@@ -1890,20 +1945,540 @@ def _term_sequence(start_term: str, count: int, include_summer: bool) -> list[st
     return (head + upcoming)[:count]
 
 
+# --------------------------------------------------------------------------- #
+# planning intake (read-only preference elicitation)
+# --------------------------------------------------------------------------- #
+#: One entry per preference the planning tools can (or cannot yet) honor. The
+#: intake tool returns these as questions; the roadmap returns the unanswered
+#: subset as ``preferences_missing`` so an agent asks instead of assuming.
+_PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
+    "credit_load": {
+        "prompt": "What credit load do you want each term (minimum / target / maximum)?",
+        "why": (
+            "The planner caps at max_credits (default 16) and drops requirements to fit; "
+            "a 12-credit load changes which requirements can be placed."
+        ),
+        "options": [],
+        "default": {"min_credits": 0, "max_credits": 16},
+        "required": True,
+        "maps_to": "unw_roadmap/min_credits+max_credits, unw_plan_draft/min_credits+max_credits",
+    },
+    "blocked_days": {
+        "prompt": "Which days must stay free (work, ministry, athletics)?",
+        "why": "avoid_days removes every section that meets on those days.",
+        "options": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "default": [],
+        "required": True,
+        "maps_to": "avoid_days",
+    },
+    "time_window": {
+        "prompt": "What is the earliest start and latest end you will accept?",
+        "why": "earliest/latest bound every placed meeting; the default is unbounded.",
+        "options": [],
+        "default": {"earliest": None, "latest": None},
+        "required": False,
+        "maps_to": "earliest/latest",
+    },
+    "delivery": {
+        "prompt": "Do you want online sections, in-person sections, or either?",
+        "why": (
+            "delivery=online admits only online sections; in_person admits in-person and "
+            "hybrid sections. Future terms are often still TBA, so a time preference may "
+            "not be enforceable yet."
+        ),
+        "options": ["any", "online", "in_person"],
+        "default": "any",
+        "required": True,
+        "maps_to": "delivery",
+    },
+    "rmp_priority": {
+        "prompt": "How much should Rate My Professors weigh against schedule and load?",
+        "why": (
+            "Only the max_rated profile is implemented; say that instead of implying a "
+            "weighting the server cannot apply."
+        ),
+        "options": ["ratings_first", "balanced", "ignore_ratings"],
+        "default": "ratings_first (the only supported profile)",
+        "required": False,
+        "maps_to": "not supported yet; profile=max_rated is fixed",
+    },
+    "summer": {
+        "prompt": "Are you willing to take summer terms to finish sooner?",
+        "why": "Summer terms are planned only when include_summer=true.",
+        "options": [True, False],
+        "default": False,
+        "required": True,
+        "maps_to": "include_summer",
+    },
+    "graduation_target": {
+        "prompt": "What term do you intend to graduate in?",
+        "why": (
+            "target_term is checked against the planned horizon; the audit's anticipated "
+            "term is an estimate, not a commitment."
+        ),
+        "options": [],
+        "default": "the audit's anticipated graduation term",
+        "required": True,
+        "maps_to": "target_term",
+    },
+    "work_hours": {
+        "prompt": "How many hours a week do you work or commit to fixed activities?",
+        "why": "Converts into blocked days/times and a realistic credit cap.",
+        "options": [],
+        "default": None,
+        "required": False,
+        "maps_to": "advice only; feed the answer into blocked_days/credit_load",
+    },
+    "program_confirmation": {
+        "prompt": "Confirm every major and minor you intend to finish. Keep all of them?",
+        "why": (
+            "A minor the student does not intend to complete should not consume the credit "
+            "budget; the audit lists declared programs, not intentions."
+        ),
+        "options": ["keep all", "drop a minor", "add a program"],
+        "default": "the audit's declared programs",
+        "required": True,
+        "maps_to": "conversation; requirements come from the audit",
+    },
+    "retakes": {
+        "prompt": "Are you repeating any course for a better grade?",
+        "why": (
+            "Completed courses are excluded by default; a repeat needs allow_repeat=true "
+            "and Banner/advisor approval."
+        ),
+        "options": [],
+        "default": False,
+        "required": False,
+        "maps_to": "allow_repeat",
+    },
+    "prior_credit": {
+        "prompt": "Any AP, transfer, dual-credit or in-progress courses not in the audit?",
+        "why": (
+            "Pass them as assume_completed so a future-term draft neither re-places them nor "
+            "blocks courses that depend on them."
+        ),
+        "options": [],
+        "default": [],
+        "required": False,
+        "maps_to": "assume_completed",
+    },
+    "holds": {
+        "prompt": "Do you have any registration holds or advisor blocks?",
+        "why": (
+            "Holds are not exposed by the mapped Degree Works/Banner APIs; an unknown hold "
+            "blocks registration but not planning."
+        ),
+        "options": [],
+        "default": "unknown",
+        "required": False,
+        "maps_to": "conversation; not exposed by the audit",
+    },
+    "avoid_instructors": {
+        "prompt": "Are there instructors you need to avoid?",
+        "why": "avoid_instructors rejects sections taught only by those names.",
+        "options": [],
+        "default": [],
+        "required": False,
+        "maps_to": "avoid_instructors",
+    },
+}
+
+
+def _question(question_id: str) -> dict[str, Any]:
+    row = dict(_PREFERENCE_QUESTIONS[question_id])
+    row["id"] = question_id
+    return row
+
+
+def planning_intake_payload(
+    term: str | None = None, include_audit: bool = True
+) -> dict:
+    """READ-ONLY structured preference interview plus the facts the audit knows.
+
+    Every section is fetched independently: one failure is reported in
+    ``source_errors`` without hiding the rest. Nothing is written and no
+    registration attempt is made.
+    """
+    errors: dict[str, str] = {}
+    profile: dict[str, Any] | None = None
+    remaining: dict[str, Any] | None = None
+    window: dict[str, Any] | None = None
+
+    if include_audit:
+        try:
+            profile = profile_payload()
+        except Exception as exc:
+            errors["profile"] = f"{type(exc).__name__}: {exc}"
+        try:
+            remaining = remaining_payload()
+        except Exception as exc:
+            errors["remaining"] = f"{type(exc).__name__}: {exc}"
+    try:
+        window = registration_window_payload(term)
+    except Exception as exc:
+        errors["registration_window"] = f"{type(exc).__name__}: {exc}"
+
+    audit_facts: dict[str, Any] = {}
+    if profile:
+        audit_facts = {
+            "majors": profile.get("majors") or [],
+            "minors": profile.get("minors") or [],
+            "programs": profile.get("programs") or [],
+            "catalog_year": profile.get("catalog_year"),
+            "classification": profile.get("classification"),
+            "credits_earned": profile.get("credits_earned"),
+            "credits_in_progress": profile.get("credits_in_progress"),
+            "anticipated_graduation": profile.get("anticipated_graduation"),
+            "percent_complete": profile.get("percent_complete"),
+            "academic_standing": profile.get("academic_standing"),
+            "holds": profile.get("holds"),
+            "holds_note": profile.get("holds_note"),
+            "advisors": profile.get("advisor_names"),
+        }
+        if remaining:
+            audit_facts["requirements_remaining"] = remaining.get("count")
+            audit_facts["known_credits_remaining"] = remaining.get(
+                "known_credits_remaining"
+            )
+            audit_facts["unknown_credits_requirements"] = remaining.get(
+                "unknown_credits_count"
+            )
+    term_facts: dict[str, Any] = {}
+    if window:
+        term_facts = {
+            "requested_term": term,
+            "current_term": window.get("current_term"),
+            "next_term": window.get("next_term"),
+            "timezone": window.get("timezone"),
+            "eligible": {
+                row.get("term"): {
+                    "label": row.get("term_label"),
+                    "eligible": row.get("eligible"),
+                    "start": row.get("start"),
+                    "end": row.get("end"),
+                    "countdown": row.get("countdown"),
+                    "parse_status": row.get("parse_status"),
+                    "standing": row.get("registration_standing"),
+                }
+                for row in window.get("windows") or []
+            },
+        }
+
+    questions = [_question(question_id) for question_id in _PREFERENCE_QUESTIONS]
+    if include_audit and audit_facts.get("anticipated_graduation"):
+        for row in questions:
+            if row["id"] == "graduation_target":
+                row["default"] = (
+                    f"audit anticipates {audit_facts['anticipated_graduation']}"
+                )
+            if row["id"] == "program_confirmation":
+                majors = ", ".join(audit_facts.get("majors") or []) or "none"
+                minors = ", ".join(audit_facts.get("minors") or []) or "none"
+                row["default"] = f"majors: {majors}; minors: {minors}"
+
+    defaults_used = [
+        {
+            "field": "max_credits",
+            "value": 16,
+            "note": "server default; the student has not confirmed a load",
+        },
+        {
+            "field": "min_credits",
+            "value": 0,
+            "note": "no minimum-load top-up until the student sets one",
+        },
+        {"field": "avoid_days", "value": [], "note": "no blocked days supplied"},
+        {
+            "field": "time_window",
+            "value": {"earliest": None, "latest": None},
+            "note": "no earliest/latest bound supplied",
+        },
+        {
+            "field": "delivery",
+            "value": "any",
+            "note": "online and in-person both allowed",
+        },
+        {
+            "field": "include_summer",
+            "value": False,
+            "note": "summer terms are not planned by default",
+        },
+        {
+            "field": "horizon",
+            "value": "start term + 3 non-summer terms",
+            "note": "unw_roadmap's default horizon, not the student's graduation plan",
+        },
+        {
+            "field": "profile",
+            "value": "max_rated",
+            "note": "the only implemented ranking profile",
+        },
+        {
+            "field": "assume_completed",
+            "value": [],
+            "note": "only audit-credited courses count as prerequisites",
+        },
+    ]
+    return {
+        "ok": all(not message for message in errors.values()) if errors else True,
+        "read_only": True,
+        "writes_performed": [],
+        "term": term,
+        "include_audit": include_audit,
+        "source_errors": errors,
+        "audit_facts": audit_facts,
+        "term_facts": term_facts,
+        "questions": questions,
+        "question_count": len(questions),
+        "defaults_used": defaults_used,
+        "next_step": (
+            "Ask the student these questions (skip what the audit already answers, but "
+            "confirm programs and holds). Then call unw_semester_plan for one term or "
+            "unw_roadmap with terms/max_credits/min_credits/avoid_days/earliest/latest/"
+            "delivery/include_summer/assume_completed/target_term. Never present a server "
+            "default as the student's preference."
+        ),
+        "note": (
+            "READ-ONLY intake. audit_facts come from Degree Works (hold data is not exposed: "
+            "null means unknown). term_facts come from Banner's registration eligibility "
+            "probe. questions are the axes the planner can honor (maps_to) plus the ones it "
+            "cannot yet (rmp_priority, holds)."
+        ),
+    }
+
+
+def _roadmap_assumptions(
+    constraints: Constraints,
+    planned_terms: Sequence[str],
+    *,
+    derived_terms: bool,
+    include_summer: bool,
+) -> list[dict[str, Any]]:
+    """Every value the roadmap used that the caller did not actually supply.
+
+    Defaults are assumptions, not preferences: the agent must ask before
+    presenting them as the student's choice.
+    """
+    rows: list[dict[str, Any]] = []
+
+    def add(field: str, value: Any, source: str, note: str) -> None:
+        rows.append({"field": field, "value": value, "source": source, "note": note})
+
+    add(
+        "terms",
+        list(planned_terms),
+        "default" if derived_terms else "requested",
+        (
+            "4 non-summer terms synthesized from start_term; pass terms= to choose the horizon"
+            if derived_terms
+            else "explicitly requested term list"
+        ),
+    )
+    add(
+        "max_credits",
+        constraints.max_credits,
+        "default" if constraints.max_credits == 16 else "requested",
+        "16 is the server default; confirm the student's real load",
+    )
+    add(
+        "min_credits",
+        constraints.min_credits,
+        "default" if constraints.min_credits == 0 else "requested",
+        "0 means no minimum-load top-up",
+    )
+    add(
+        "include_summer",
+        include_summer,
+        "requested",
+        "summer terms are excluded unless include_summer=true",
+    )
+    add(
+        "avoid_days",
+        [day.value for day in constraints.avoid_days],
+        "default" if not constraints.avoid_days else "requested",
+        "no blocked days supplied; every weekday is available",
+    )
+    add(
+        "time_window",
+        {
+            "earliest": constraints.earliest.strftime("%H:%M") if constraints.earliest else None,
+            "latest": constraints.latest.strftime("%H:%M") if constraints.latest else None,
+        },
+        "default" if not (constraints.earliest or constraints.latest) else "requested",
+        "no earliest/latest bound supplied",
+    )
+    add(
+        "delivery",
+        constraints.delivery,
+        "default" if constraints.delivery == "any" else "requested",
+        "any admits online, hybrid and in-person sections",
+    )
+    add(
+        "avoid_instructors",
+        list(constraints.avoid_instructors),
+        "default" if not constraints.avoid_instructors else "requested",
+        "no instructor exclusions supplied",
+    )
+    add(
+        "assume_completed",
+        list(constraints.assume_completed),
+        "default" if not constraints.assume_completed else "requested",
+        (
+            "prerequisites consider only courses the audit already credits; earlier planned "
+            "terms are not assumed unless listed here"
+        ),
+    )
+    pins = list(constraints.required_crns) + list(constraints.required_courses)
+    add(
+        "pins",
+        pins,
+        "default" if not pins else "requested",
+        "pins apply to the first planned term only; later terms are planned from requirements",
+    )
+    return rows
+
+
+def _missing_preferences(
+    constraints: Constraints,
+    *,
+    include_summer: bool,
+    target_term: str | None,
+) -> list[dict[str, Any]]:
+    """Preferences the caller never supplied, phrased as questions to ask."""
+    missing_ids = []
+    if constraints.max_credits == 16 and constraints.min_credits == 0:
+        missing_ids.append("credit_load")
+    if not constraints.avoid_days:
+        missing_ids.append("blocked_days")
+    if not (constraints.earliest or constraints.latest):
+        missing_ids.append("time_window")
+    if constraints.delivery == "any":
+        missing_ids.append("delivery")
+    if not include_summer:
+        missing_ids.append("summer")
+    if not target_term:
+        missing_ids.append("graduation_target")
+    if not constraints.assume_completed:
+        missing_ids.append("prior_credit")
+    if not constraints.avoid_instructors:
+        missing_ids.append("avoid_instructors")
+    missing_ids.append("rmp_priority")
+    return [_question(question_id) for question_id in missing_ids]
+
+
+def _target_term_assessment(
+    target_term: str | None,
+    planned_terms: Sequence[str],
+    roadmap: Roadmap,
+    requirements: Sequence[Requirement],
+) -> dict[str, Any] | None:
+    """Compare a graduation target with the planned horizon (no optimizer)."""
+    if not target_term:
+        return None
+    target = str(target_term).strip()
+    if len(target) != 6 or not target.isdigit():
+        raise ValueError("target_term must be a Banner term code like 202810.")
+    remaining_credits = 0.0
+    unknown = 0
+    for requirement in requirements:
+        if requirement.satisfied:
+            continue
+        if requirement.min_credits is not None:
+            remaining_credits += max(0.0, requirement.min_credits - requirement.applied_credits)
+        else:
+            unknown += 1
+    remaining_credits = round(remaining_credits, 2)
+    notes = [
+        "Remaining credits are the audit's stated shortfalls only; pick-N rows without a "
+        "credit target are counted in unknown_requirements, so this is a lower bound."
+    ]
+    result: dict[str, Any] = {
+        "target_term": target,
+        "target_label": term_label(target),
+        "remaining_credits_known": remaining_credits,
+        "unknown_requirements": unknown,
+        "planned_terms": list(planned_terms),
+        "feasible": None,
+        "required_per_term": None,
+        "notes": notes,
+    }
+    if not planned_terms:
+        result["feasible"] = False
+        result["notes"].append("No terms were planned, so the target cannot be assessed.")
+        return result
+    if _term_key(target) < _term_key(planned_terms[0]):
+        result["feasible"] = False
+        result["notes"].append(
+            f"The target {result['target_label']} precedes the first planned term "
+            f"{term_label(planned_terms[0])}; it cannot be met by this horizon."
+        )
+        return result
+    if target in planned_terms:
+        index = planned_terms.index(target)
+        terms_until = index + 1
+        required = round(remaining_credits / terms_until, 2)
+        result["required_per_term"] = required
+        result["feasible"] = required <= float(roadmap.terms[index].draft.total_credits) + 1e-9 if (
+            index < len(roadmap.terms) and roadmap.terms[index].draft is not None
+        ) else False
+        result["notes"].append(
+            f"{terms_until} planned term(s) to {result['target_label']}: "
+            f"{remaining_credits:g} known remaining credits means about {required:g} per term."
+        )
+        if roadmap.final_remaining:
+            result["feasible"] = False
+            result["notes"].append(
+                f"{len(roadmap.final_remaining)} requirement(s) still remain after the horizon; "
+                "the target is not demonstrated."
+            )
+        return result
+    result["notes"].append(
+        f"{result['target_label']} is beyond the planned horizon (last planned term "
+        f"{term_label(planned_terms[-1])}); the roadmap does not plan it, so feasibility "
+        "is not demonstrated."
+    )
+    return result
+
+
 def roadmap_payload(
     start_term: str,
     terms: Sequence[str] | str | None = None,
     include_summer: bool = False,
     max_credits: float = 16,
     refresh: bool = False,
+    min_credits: float = 0,
+    avoid_days: Sequence[str] | str | None = None,
+    earliest: str | None = None,
+    latest: str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    required_courses: Sequence[str] | str | None = None,
+    required_crns: Sequence[str | int] | str | None = None,
+    hours: dict[str, float] | None = None,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
+    target_term: str | None = None,
 ) -> dict:
     wanted = _norm_list(terms)
     planned_terms = wanted or _term_sequence(start_term, 4, include_summer)
-    constraints = build_constraints(max_credits)
+    constraints = build_constraints(
+        max_credits,
+        avoid_days,
+        earliest,
+        latest,
+        min_credits=min_credits,
+        avoid_instructors=avoid_instructors,
+        exclude_arrangement=exclude_arrangement,
+        required_crns=required_crns,
+        required_courses=required_courses,
+        credit_overrides=hours,
+        assume_completed=assume_completed,
+        delivery=delivery,
+    )
     planner, snapshots, audit, raw, current_term = _planner(planned_terms, refresh)
     catalogs = [_catalog_meta(snapshot) for snapshot in snapshots.values()]
     with _BANNER_LOCK:
-        roadmap = planner.roadmap(planned_terms, constraints)
+        roadmap = planner.roadmap(planned_terms, constraints, include_summer=include_summer)
     rows = []
     for entry in roadmap.terms:
         row: dict[str, Any] = {
@@ -1943,30 +2518,82 @@ def roadmap_payload(
     for entry in roadmap.terms:
         if entry.status == "no_catalog":
             risks.append(
-                f"{entry.label} ({entry.term}) has no published catalog query; "
-                "its requirements were not planned."
+                f"{entry.label} ({entry.term}) has no published catalog (0 sections): its "
+                "requirements were not planned, so anything left after it is not evidence "
+                "that the courses are unavailable."
             )
         elif entry.draft is not None and entry.draft.total_credits == 0:
             risks.append(
                 f"{entry.label} ({entry.term}) placed 0 credits: nothing outstanding is "
                 "offered there under these constraints."
             )
+    if roadmap.terms_without_catalog:
+        risks.append(
+            "Unpublished term(s) "
+            + ", ".join(f"{term_label(term)} ({term})" for term in roadmap.terms_without_catalog)
+            + " were skipped; do not report them as offering nothing."
+        )
+    if not include_summer:
+        summer_asked = [term for term in wanted if term_label(term).startswith("Summer")]
+        if summer_asked:
+            risks.append(
+                f"Summer term(s) {', '.join(summer_asked)} were requested but "
+                "include_summer=false, so they were not planned; pass "
+                "include_summer=true to plan them."
+            )
+    assessment = _target_term_assessment(
+        target_term, planned_terms, roadmap, planner.requirements
+    )
+    if assessment and assessment["feasible"] is False:
+        risks.append(
+            f"Graduation target {assessment['target_label']} is not demonstrated: "
+            + " ".join(assessment["notes"][-2:])
+        )
+    assumptions = _roadmap_assumptions(
+        constraints,
+        planned_terms,
+        derived_terms=not wanted,
+        include_summer=include_summer,
+    )
     return {
         "ok": True,
         "start_term": start_term,
         "terms": planned_terms,
         "include_summer": include_summer,
         "max_credits": max_credits,
+        "min_credits": min_credits,
+        "constraints": {
+            "avoid_days": [day.value for day in constraints.avoid_days],
+            "earliest": constraints.earliest.strftime("%H:%M") if constraints.earliest else None,
+            "latest": constraints.latest.strftime("%H:%M") if constraints.latest else None,
+            "avoid_instructors": list(constraints.avoid_instructors),
+            "exclude_arrangement": constraints.exclude_arrangement,
+            "required_courses": list(constraints.required_courses),
+            "required_crns": list(constraints.required_crns),
+            "hours": dict(constraints.credit_overrides),
+            "assume_completed": list(constraints.assume_completed),
+            "delivery": constraints.delivery,
+            "pins_apply_to": planned_terms[0] if planned_terms else None,
+        },
+        "assumptions": assumptions,
+        "preferences_missing": _missing_preferences(
+            constraints, include_summer=include_summer, target_term=target_term
+        ),
+        "graduation_target": assessment,
         "current_term": current_term,
         "anticipated_graduation": anticipated,
         "student": audit.student_name,
         "catalogs": catalogs,
         "planned": rows,
+        "terms_without_catalog": list(roadmap.terms_without_catalog),
         "final_remaining": roadmap.final_remaining,
         "risks": risks,
         "note": (
-            "Roadmap honors max_credits and include_summer only. Course/CRN pins, "
-            "minimum-load and instructor exclusions apply to unw_plan_draft."
+            "Roadmap honors the same constraints as unw_plan_draft, applied to every planned "
+            "term; pins apply to the first term only. Terms with no published catalog are "
+            "reported as no_catalog and are never planned. assumptions lists every value that "
+            "was a server default, and preferences_missing lists what to ask the student "
+            "before presenting this plan. Read-only: it never registers or writes plans."
         ),
     }
 
@@ -2011,14 +2638,21 @@ def _history_payload(
     offered_labels = ", ".join(term_label(term) for term in history.offered_terms)
     if history.pattern.value == "unknown":
         summary = (
-            f"never observed in {len(observed)} cached terms "
+            f"never observed in {len(observed)} published terms "
             f"({', '.join(term_label(term) for term in observed)})"
+        )
+    elif history.pattern.value == "insufficient_history":
+        summary = (
+            f"only {history.observed_count} observation ({offered_labels}); not enough "
+            "evidence to call a season"
         )
     else:
         summary = f"{history.pattern.value}; offered in {offered_labels}"
     return {
         "key": history.key,
         "pattern": history.pattern.value,
+        "observed_count": history.observed_count,
+        "weak_evidence": history.weak_evidence,
         "offered_terms": history.offered_terms,
         "summary": summary,
         "terms": [
@@ -2047,14 +2681,20 @@ def offering_matrix_payload(
         )
     snapshots: dict[str, TermSnapshot] = {}
     catalogs = []
+    unpublished: list[str] = []
     for term in observed:
         snapshot = fetch_term(term, refresh=True) if refresh else load_snapshot(term)
         if snapshot is None:
             continue
         snapshots[term] = snapshot
         catalogs.append(_catalog_meta(snapshot))
+        if len(snapshot) == 0:
+            unpublished.append(term)
     if not snapshots:
         raise ValueError("Cached snapshot files exist but none could be loaded.")
+    # An unpublished term (0 sections) is not evidence of absence; drop it from
+    # both the columns and the pattern inference.
+    observed = [term for term in observed if term not in set(unpublished)]
 
     audit = None
     specs = _norm_list(courses)
@@ -2091,18 +2731,23 @@ def offering_matrix_payload(
         "ok": True,
         "observed_terms": observed,
         "observed_labels": [term_label(term) for term in observed],
+        "terms_without_catalog": unpublished,
+        "terms_without_catalog_labels": [term_label(term) for term in unpublished],
         "count": len(histories),
         "catalogs": catalogs,
         "courses": [_history_payload(history, observed) for history in histories],
         "legend": {
-            "every-term": "observed in at least one spring and one fall",
-            "fall-only": "observed only in fall terms",
-            "spring-only": "observed only in spring terms",
-            "unknown": "never observed in the cached terms",
+            "every-term": "observed in at least one spring and one fall (2+ observations)",
+            "fall-only": "observed only in fall terms (2+ observations)",
+            "spring-only": "observed only in spring terms (2+ observations)",
+            "insufficient_history": "only one observation; not enough to call a season",
+            "unknown": "never observed in the published terms",
         },
         "note": (
-            "Section counts are per term; open_sections counts seats>0. Pattern is "
-            "inferred from observed terms only, not a catalog guarantee."
+            "Section counts are per term; open_sections counts seats>0. Patterns need at "
+            "least two observations and ignore terms whose catalog is unpublished (0 "
+            "sections), so a brand-new course reports insufficient_history rather than "
+            "fall-only. This is inferred history, not a catalog guarantee."
         ),
     }
 
@@ -2837,59 +3482,59 @@ START HERE
 - Then unw_profile() and unw_remaining(). The audit already knows the student's
   majors, minors, catalog year, classifications and advisors: never ask the student
   for facts the audit can answer.
-- DO confirm declared programs against what the student says. They diverge often
-  (e.g. a student says "ministry minor" while the audit says "Bible"). Report the
-  discrepancy, do not silently pick one.
+- DO confirm declared programs against what the student says; they diverge often
+  (e.g. "ministry minor" vs the audit's "Bible"). Report the discrepancy.
 - For "what should I take" call unw_semester_plan once (draft+conflicts+ticket+plans);
   use unw_plan_draft only for full section objects.
 
 ASK BEFORE ASSUMING
-- Credit budget, blocked days/times, earliest start, latest end, summer
-  willingness, and graduation target. unw_roadmap and unw_plan_draft have
-  defaults; defaults are not the student's preferences.
+- Ask unw_planning_intake()'s questions (load, blocked days/times, delivery,
+  RMP weight, summer, graduation target, work, programs, prior credit, holds) —
+  unw_roadmap reports its `assumptions`/`preferences_missing`; defaults are not
+  preferences, so ask instead of guessing.
 
 PLANNING ORDER
 1. Scarce major-required courses first. Check unw_offering_matrix before proposing
-   any course: never propose a fall-only course for spring (or vice versa).
+   any course: never fall-only in spring (or vice versa); insufficient_history is
+   unknown, not a season.
 2. Then the major credit pool / electives, then minor-required slots.
 3. Then gen-ed slots, choosing the highest RMP rating among eligible sections.
 - Never propose two sections with a time conflict. Use unw_conflicts on the final
   CRN set and show the ASCII grid.
-- Flag NOT_YET_OPEN / CLOSED sections, single-section courses, unassigned faculty
-  ("Staff"), and variable-credit rows. Seats are a 15-minute snapshot.
+- Flag NOT_YET_OPEN / CLOSED, single-section courses, unassigned faculty ("Staff")
+  and variable-credit rows. Seats are a 15-minute snapshot.
+- no_catalog = the term is unpublished: never call it "not offered".
+  constraints_unenforced = a day/time/delivery preference could not be checked
+  (TBA rows); do not claim it held.
+- Term by term: pass earlier picks as assume_completed (no repeats, prereqs count).
 
 RATINGS
-- Unrated is unknown, not bad: null is never 0.0. Prefer rated instructors but say
-  when the evidence is thin (n<3 is weak). Match confidence reflects name
-  ambiguity, not teaching quality.
+- Unrated is unknown, not bad: null is never 0.0; n<3 is weak evidence; confidence
+  is name matching, not teaching quality. Prefer rated instructors and say so.
 
 BANNER PLANS (term-scoped)
 - Plans belong to one term. unw_banner_plans(term) returning [] means "no plans
   for THIS term", not "no plans exist". Other terms' plans are invisible.
-- Confirmation is ENFORCED by the server, not advisory. Every write tool requires
-  confirm=true; unw_banner_plan_delete also requires confirm_name equal to the
-  plan's exact name. Calling without them returns refused=true, the intended
-  effect and the current plan state, and performs no write.
+- Confirmation is ENFORCED: every write needs confirm=true and delete also needs
+  confirm_name equal to the exact name; otherwise the tool returns refused=true,
+  the intended effect and current plan state, and writes nothing.
 - Still show that intended effect to the user and get explicit approval before
   re-calling with confirmation. Add/remove need a plan id or exact name;
   ambiguous names are rejected with candidates, never guessed.
-- Every successful write returns a read-back before/after diff (rows, credits). Report it.
-- Do not create/delete plans just to test something: the student's plans are real.
+- Every write returns a read-back before/after diff (rows, credits). Report it, and
+  never create/delete plans just to test something: the student's plans are real.
 
 REGISTRATION
-- unw_register_preview is a DRY RUN. It never POSTs add/drop/register. Use
-  unw_registration_window for time tickets; report Banner's eligibility failure
-  text verbatim instead of implying registration can proceed.
+- unw_register_preview is a DRY RUN; it never POSTs add/drop/register. Use
+  unw_registration_window for tickets and quote Banner's failure text verbatim.
 
 OUTPUT
-- Always show the ASCII grid and a one-line rationale per pick. Report
-  discrepancies (already-completed course, requirement the plan drops, audit vs
-  catalog conflicts) instead of quietly resolving them.
-CACHING
-- Term snapshots are cached for 15 minutes. Pass refresh=true only when the user
-  needs current seats. unw_offering_matrix reads historical snapshots and is the
-  right tool for "can this course be taken next term?".
+- Show the ASCII grid and a rationale per pick; report discrepancies (completed
+  course, dropped requirement, audit vs catalog) instead of resolving them.
+- Term snapshots are cached 15 min (refresh=true only for current seats);
+  unw_offering_matrix reads historical snapshots: use it for future terms.
 """
+
 
 mcp = MCPServer(
     name=SERVER_NAME,
@@ -3058,12 +3703,20 @@ def unw_plan_draft(
     courses: Sequence[str] | str | None = None,
     allow_repeat: bool = False,
     repeat: bool | None = None,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
 ) -> dict:
     """Draft a conflict-free term plan from the audit, prioritizing major-required
     courses, then major pools, then minor-required, then gen-ed by RMP rating.
 
     Canonical constraints are ``max_credits`` and ``required_courses``; the
     ``credits``/``pins``/``courses`` aliases mirror unw_semester_plan.
+    ``assume_completed`` lists course codes already completed or planned in an
+    earlier term (merge them so this draft neither re-places them nor blocks their
+    dependents). ``delivery`` is any|online|in_person (in_person admits hybrid
+    sections). ``constraints_unenforced`` names the constraints that could not be
+    evaluated because every placed section is TBA. A term with no published
+    catalog returns ok=false with error_type=NoCatalog, never a 0-credit plan.
     ``required_crns``/``required_courses`` pin sections the student insists on;
     each pin reports placed/unavailable/conflict/prereq_blocked/excluded/budget/
     already_completed, and a failed pin makes ok=false. ``exclude_crns``/
@@ -3095,6 +3748,8 @@ def unw_plan_draft(
         exclude_arrangement,
         hours,
         allow_repeat or bool(repeat),
+        assume_completed,
+        delivery,
     )
 
 
@@ -3122,6 +3777,8 @@ def unw_semester_plan(
     include_banner_plans: bool = True,
     allow_repeat: bool = False,
     repeat: bool | None = None,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
 ) -> dict:
     """ONE-CALL semester report (read-only): draft + conflicts + personal
     registration window + Banner Plan Ahead summaries. Canonical constraints are
@@ -3133,9 +3790,13 @@ def unw_semester_plan(
     warnings, a conflict summary, the registration window and Banner plan
     summaries, plus an executable ``next_action`` naming the CRNs. A pin for a
     course the audit already credits fails with ``already_completed`` unless
-    ``allow_repeat`` (alias ``repeat``) is true. A window or Banner-plan failure
-    is reported in its own field without hiding the draft. It never
-    registers/adds/drops."""
+    ``allow_repeat`` (alias ``repeat``) is true. ``assume_completed`` accepts
+    course codes completed or planned earlier (no duplicate picks, dependents
+    unblocked); ``delivery`` is any|online|in_person. ``constraints_unenforced``
+    names time/delivery preferences that could not be evaluated because the
+    placed sections are TBA. An unpublished term returns error_type=NoCatalog.
+    A window or Banner-plan failure is reported in its own field without hiding
+    the draft. It never registers/adds/drops."""
     return _safe(
         semester_plan_payload,
         term=term,
@@ -3159,7 +3820,28 @@ def unw_semester_plan(
         courses=courses,
         include_banner_plans=include_banner_plans,
         allow_repeat=allow_repeat or bool(repeat),
+        assume_completed=assume_completed,
+        delivery=delivery,
     )
+
+
+@mcp.tool(structured_output=False)
+def unw_planning_intake(term: str | None = None, include_audit: bool = True) -> dict:
+    """READ-ONLY planning interview: the facts Degree Works/Banner already know,
+    plus the exact questions to ask the student before planning. Call this before
+    unw_roadmap/unw_semester_plan when planning more than the current term.
+
+    Returns ``audit_facts`` (majors, minors, catalog year, credits earned and in
+    progress, anticipated graduation, standing, holds=null means unknown),
+    ``term_facts`` (current/next term and the personal ticket start/end/eligible),
+    ``questions`` (id, prompt, why, options, default, required) covering credit
+    load, blocked days, time window, delivery, RMP priority, summer, graduation
+    target, work hours, program confirmation, retakes, prior credit, holds and
+    instructor exclusions, ``defaults_used`` (every server default, labelled as an
+    assumption rather than a preference), and ``next_step``. Each section is
+    fetched independently: a failure appears in ``source_errors`` without hiding
+    the rest. It never registers or writes."""
+    return _safe(planning_intake_payload, term, include_audit)
 
 
 @mcp.tool(structured_output=False)
@@ -3169,25 +3851,71 @@ def unw_roadmap(
     include_summer: bool = False,
     max_credits: float = 16,
     refresh: bool = False,
+    min_credits: float = 0,
+    avoid_days: Sequence[str] | str | None = None,
+    earliest: str | None = None,
+    latest: str | None = None,
+    avoid_instructors: Sequence[str] | str | None = None,
+    exclude_arrangement: bool = False,
+    required_courses: Sequence[str] | str | None = None,
+    required_crns: Sequence[str | int] | str | None = None,
+    hours: dict[str, float] | None = None,
+    assume_completed: Sequence[str] | str | None = None,
+    delivery: str = "any",
+    target_term: str | None = None,
 ) -> dict:
     """Multi-term plan starting at ``start_term`` (default: the start term plus
-    three non-summer terms; summer only when include_summer). Carries requirements
-    and prerequisites forward, reports terms with no published catalog, and returns
-    graduation-risk notes against the audit's anticipated graduation term. Course
-    pins, minimum-load and instructor exclusions are draft-only: use
-    unw_plan_draft for those."""
-    return _safe(roadmap_payload, start_term, terms, include_summer, max_credits, refresh)
+    three non-summer terms; summer only when include_summer=true, and an explicit
+    summer term in ``terms`` is planned only when include_summer=true too).
+
+    Honors the same constraints as unw_plan_draft across every term: max/min
+    credits, blocked days, earliest/latest, avoid_instructors,
+    exclude_arrangement, delivery (any|online|in_person), assume_completed (codes
+    completed or planned earlier) and variable-credit ``hours``. Pins
+    (``required_crns``/``required_courses``) apply to the FIRST planned term only.
+    A term whose catalog is unpublished (0 sections) is reported as ``no_catalog``,
+    skipped, and listed in ``terms_without_catalog`` — never as "nothing is
+    offered". Returns ``assumptions`` (every default actually used, marked
+    default), ``preferences_missing`` (questions to ask before presenting the
+    plan), ``graduation_target`` (feasibility of target_term: known remaining
+    credits per term, or that the target is beyond the horizon) and per-term
+    ``constraints_unenforced`` when TBA sections make a preference unevaluable.
+    Read-only: it never registers and never writes a Banner plan."""
+    return _safe(
+        roadmap_payload,
+        start_term,
+        terms,
+        include_summer,
+        max_credits,
+        refresh,
+        min_credits,
+        avoid_days,
+        earliest,
+        latest,
+        avoid_instructors,
+        exclude_arrangement,
+        required_courses,
+        required_crns,
+        hours,
+        assume_completed,
+        delivery,
+        target_term,
+    )
 
 
 @mcp.tool(structured_output=False)
 def unw_offering_matrix(
     courses: Sequence[str] | str | None = None, refresh: bool = False
 ) -> dict:
-    """Offering pattern per course/attribute across every observed term: every-term,
-    fall-only, spring-only, summer-only or never observed, with section counts,
-    open counts and instructors per term. Accepts "CYS 4245", "ATTRIBUTE NATS" or
-    "DAL *". Omit courses for every unmet requirement target. Use this before
-    proposing a course for a future term."""
+    """Offering pattern per course/attribute across every published term: every-term,
+    fall-only, spring-only, summer-only, insufficient_history or never observed,
+    with section counts, open counts and instructors per term. Accepts "CYS 4245",
+    "ATTRIBUTE NATS" or "DAL *". Omit courses for every unmet requirement target.
+    Only terms with a published catalog (sections > 0) count: an unpublished term
+    is listed in ``terms_without_catalog`` instead of counting as "not offered".
+    A pattern needs 2+ observations; ``observed_count`` and ``weak_evidence`` say
+    how much evidence backs it. Use this before proposing a course for a future
+    term."""
     return _safe(offering_matrix_payload, courses, refresh)
 
 

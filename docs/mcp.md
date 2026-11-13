@@ -67,10 +67,11 @@ actionable `"hint"` instead of raising.
 | `unw_candidates` | `term`; `requirement?`, `open_only?=true`, `compact?=false`, `limit?=0` (0=all), `refresh?=false` | Resolves each unmet requirement (or one id/title substring) to offered sections, with the explicit reason when empty. `compact` omits duplicated section detail; `limit` caps candidates per requirement and reports `returned`/`truncated`. One requirement can be large. |
 | `unw_ratings` | `names` (list, or one string), `refresh?=false` | Batch RMP lookup. Each name may be `"Last, First"` or `"First Last"`; a comma inside a single name is preserved. Unrated → `rating: null`, never `0.0`; `weak_evidence` flags n<3. Cache entries expire after 7 days; transient RMP failures are never cached. |
 | `unw_conflicts` | `term`, `crns`, `refresh?=false`, `hours?` | Pairwise conflicts, ASCII week grid plus `grid_legend` (label → CRN list; date-disjoint slugs are suffixed "(different parts of term)"), `grid_note`, total credits on the same planning basis as the draft (`hours` overrides; a 0-low range reserves the high end), unscheduled and `partial_tba_crns`, missing CRNs. |
-| `unw_plan_draft` | `term`; `max_credits?=16`, `min_credits?=0`, `profile?="max_rated"`, `avoid_days?`, `earliest?`, `latest?`, `avoid_instructors?`, `exclude_arrangement?=false`, `required_crns?`, `required_courses?`, `exclude_crns?`, `exclude_courses?`, `hours?`, `include_summer?=false`, `refresh?=false` | Conflict-free draft: picks with rationale, credits, average RMP, grid plus `grid_legend`, verification problems, unplaced requirements + reasons. `required_crns`/`required_courses` are placed first and hard-fail (`ok: false` + `pin_errors`) when unavailable/conflicting/prereq-blocked/excluded/over budget; `min_credits` tops up from elective pools (`min_credits_met`); `hours` sets the credit hours reserved per CRN; `unw_roadmap` does not accept pins. `include_summer` also drafts the following summer for requirements that did not fit. |
-| `unw_semester_plan` | `term`; canonical constraints are `max_credits?=16` and `required_courses`; also `min_credits?=0`, `required_crns`, `exclude_crns`/`exclude_courses`, `avoid_days`, `earliest`/`latest`, `avoid_instructors`, `hours`, `exclude_arrangement`, `profile`, `include_summer`, `refresh`, `include_banner_plans?=true`, `allow_repeat?=false` (alias `repeat`). Aliases: `credits` → `max_credits`; `pins`/`courses` append to `required_courses`. | **READ-ONLY, ONE CALL.** Draft + conflicts + personal registration window + Banner Plan Ahead summaries in one compact report: plan totals/verified/`min_credits_met`/average RMP plus applied `max_credits`/`min_credits`/`hours`/`requested`/`assumptions` (including `allow_repeat`); selections with CRN/course/title/instructor/rating summary/days/times/credits/`credit_range`/seats/open/covers/rationale/`prereq_unverified`; `tba_crns`/`tba_sections`; `prereq_unverified_crns`/sections; grid + `grid_legend`; pinned (with `hours_applied`)/pin_errors/unplaced/warnings; conflict summary; registration window; Banner plan summaries; executable `next_action` naming the CRNs. A window or Banner-plan failure is reported in its own field and the draft is still returned. Never registers/adds/drops. |
-| `unw_roadmap` | `start_term`; `terms?`, `include_summer?=false`, `max_credits?=16`, `refresh?=false` | Multi-term plan (default: the start term + next three non-summer terms), carried-forward requirements/prereqs, `final_remaining` and graduation-risk notes against the audit's `GRADTERMUG`. |
-| `unw_offering_matrix` | `courses?` (list or comma string), `refresh?=false` | Offering pattern per `CYS 4245` / `ATTRIBUTE NATS` / `DAL *`: `every-term`, `fall-only`, `spring-only`, `summer-only`, `fall+summer`, `spring+summer`, `unknown`, with section counts/open counts/instructors per term. Omit `courses` for all unmet targets. |
+| `unw_plan_draft` | `term`; `max_credits?=16`, `min_credits?=0`, `profile?="max_rated"`, `avoid_days?`, `earliest?`, `latest?`, `delivery?="any"`, `avoid_instructors?`, `exclude_arrangement?=false`, `required_crns?`, `required_courses?`, `exclude_crns?`, `exclude_courses?`, `assume_completed?`, `hours?`, `include_summer?=false`, `refresh?=false` | Conflict-free draft: picks with rationale, credits, average RMP, grid plus `grid_legend`, verification problems, unplaced requirements + reasons. `required_crns`/`required_courses` are placed first and hard-fail (`ok: false` + `pin_errors`) when unavailable/conflicting/prereq-blocked/excluded/over budget; `min_credits` tops up from elective pools (`min_credits_met`); `hours` sets the credit hours reserved per CRN; `assume_completed` lists courses already done or planned in an earlier term (they are neither re-placed nor allowed to block dependents); `delivery` is `any`/`online`/`in_person` (in_person admits hybrid); each selection exposes `campus`/`instructional_method`/`delivery`; `constraints_unenforced` names day/time/delivery preferences that could not be evaluated (TBA rows); an unpublished term returns `ok: false` + `error_type: "NoCatalog"`, never a 0-credit plan; `unw_roadmap` does not accept pins. `include_summer` also drafts the following summer for requirements that did not fit. |
+| `unw_semester_plan` | `term`; canonical constraints are `max_credits?=16` and `required_courses`; also `min_credits?=0`, `required_crns`, `exclude_crns`/`exclude_courses`, `avoid_days`, `earliest`/`latest`, `delivery?="any"`, `avoid_instructors`, `hours`, `exclude_arrangement`, `profile`, `include_summer`, `refresh`, `include_banner_plans?=true`, `allow_repeat?=false` (alias `repeat`), `assume_completed?`. Aliases: `credits` → `max_credits`; `pins`/`courses` append to `required_courses`. | **READ-ONLY, ONE CALL.** Draft + conflicts + personal registration window + Banner Plan Ahead summaries in one compact report: plan totals/verified/`min_credits_met`/average RMP plus applied `max_credits`/`min_credits`/`hours`/`requested`/`assumptions` (including `allow_repeat`); selections with CRN/course/title/instructor/rating summary/days/times/credits/`credit_range`/seats/open/covers/rationale/`prereq_unverified`; `tba_crns`/`tba_sections`; `prereq_unverified_crns`/sections; grid + `grid_legend`; pinned (with `hours_applied`)/pin_errors/unplaced/warnings; conflict summary; registration window; Banner plan summaries; executable `next_action` naming the CRNs. A window or Banner-plan failure is reported in its own field and the draft is still returned. Never registers/adds/drops. |
+| `unw_planning_intake` | `term?`, `include_audit?=true` | **READ-ONLY planning interview.** `audit_facts` (majors, minors, catalog year, credits earned/in progress, anticipated graduation, standing, `holds: null` = unknown, advisors), `term_facts` (current/next term and each personal ticket's start/end/eligibility/countdown), `questions` (id, prompt, why, options, default, required) for credit load, blocked days, time window, delivery, RMP priority, summer, graduation target, work hours, program confirmation, retakes, prior credit, holds and instructor exclusions, `defaults_used` (every server default, labelled an assumption), `source_errors` (one failing section never hides the rest) and `next_step`. Read-only: never registers or writes. |
+| `unw_roadmap` | `start_term`; `terms?`, `include_summer?=false`, `max_credits?=16`, `min_credits?=0`, `avoid_days?`, `earliest?`/`latest?`, `avoid_instructors?`, `exclude_arrangement?`, `delivery?="any"`, `required_courses?`/`required_crns?` (start term only), `hours?`, `assume_completed?`, `target_term?`, `refresh?=false` | Multi-term plan (default: the start term + next three non-summer terms; summer only when `include_summer=true`). Same constraints as `unw_plan_draft` across every term, carried-forward requirements/prereqs, `final_remaining` and graduation-risk notes against the audit's `GRADTERMUG`. Terms with no published catalog are `status: "no_catalog"`, skipped and listed in `terms_without_catalog`. `assumptions` labels every default actually used, `preferences_missing` lists the questions still to ask, and `graduation_target` reports known remaining credits per term (or that the target is beyond the horizon). |
+| `unw_offering_matrix` | `courses?` (list or comma string), `refresh?=false` | Offering pattern per `CYS 4245` / `ATTRIBUTE NATS` / `DAL *`: `every-term`, `fall-only`, `spring-only`, `summer-only`, `fall+summer`, `spring+summer`, `insufficient_history`, `unknown`, with section counts/open counts/instructors per term, `observed_count` and `weak_evidence`. Only published terms (sections > 0) count; unpublished ones are listed in `terms_without_catalog` instead of counting as "not offered". A season needs 2+ observations. Omit `courses` for all unmet targets. |
 | `unw_banner_plans` | `term` | Plans for **one term**. TERM-SCOPED: an empty list means no plans for THIS term. `plan_ahead_available: false` means Banner does not offer Plan Ahead for that term at all (e.g. 202710). |
 | `unw_banner_plan_create` | `term`, `name`, `confirm` | **Writes.** Creates a named worksheet (max 5/term). `confirm` is required and enforced; without `true` it returns the intended effect and current plan count. |
 | `unw_banner_plan_add` | `term`, `plan`, `confirm`, `crn?` or `subject`+`number` | **Writes.** Adds a section or course. `confirm` is required and enforced; refusal names the exact section and current plan state. `plan` = id or exact name; ambiguous/missing/duplicate rows are rejected without writing. |
@@ -275,33 +276,60 @@ Conflicts are reported with both CRNs and the exact overlap, e.g.
    "warnings": [], "grid": "…", "score_breakdown": ["5 section(s), 16/16 credits", …]}}
 ```
 
-### `unw_roadmap(start_term="202620", terms=["202620","202630","202710"])`
+### `unw_roadmap(start_term="202620", terms=["202620","202630","202710"], include_summer=True)`
 
 ```json
-{"terms": ["202620", "202630", "202710"], "anticipated_graduation": "Spring 2028",
+{"terms": ["202620", "202630", "202710"], "include_summer": true,
+ "constraints": {"avoid_days": [], "earliest": null, "latest": null, "delivery": "any",
+                 "assume_completed": [], "required_courses": [], "pins_apply_to": "202620"},
+ "assumptions": [{"field": "terms", "value": ["202620","202630","202710"], "source": "requested",
+                  "note": "explicitly requested term list"},
+                 {"field": "max_credits", "value": 16.0, "source": "default",
+                  "note": "16 is the server default; confirm the student's real load"},
+                 {"field": "avoid_days", "value": [], "source": "default",
+                  "note": "no blocked days supplied; every weekday is available"}, …],
+ "preferences_missing": [{"id": "credit_load", "prompt": "What credit load do you want each term …",
+                          "why": "The planner caps at max_credits …", "default": {...}, "required": true}, …],
+ "graduation_target": {"target_term": "202810", "target_label": "Fall 2028", "feasible": null,
+                       "remaining_credits_known": 22.0, "required_per_term": null,
+                       "notes": ["… is beyond the planned horizon (last planned term Fall 2027); …"]},
  "planned": [{"term": "202620", "label": "Spring 2027", "status": "planned",
-              "credits": 16.0, "courses": ["COS 2005", "ICS 2045", "ICS 3005", "MIN 3045", "BIB 3223"]},
+              "draft": {"total_credits": 16.0, "constraints_unenforced": [], …}},
              {"term": "202630", "label": "Summer 2027", "status": "planned",
-              "credits": 16.0, "courses": ["MIN 5510", "MIN 1641", …]}, …],
- "final_remaining": ["Additional credits for double major with Cybersecurity (Major: Computer Science)",
-                     "Ministry Foundations (Minor: Ministry)", …],
- "risks": ["Additional credits for double major with Cybersecurity: COS 4841: every-term (…) …",
-           "The audit anticipates graduation in Spring 2028; verify the remaining courses are offered before that term …"]}
+              "draft": {"total_credits": 16.0, …}},
+             {"term": "202810", "label": "Fall 2028", "status": "no_catalog", "draft": null,
+              "notes": ["catalog not published (0 sections): nothing was planned and its absence is not evidence about offerings"]}],
+ "terms_without_catalog": ["202810"],
+ "final_remaining": ["Additional credits for double major with Cybersecurity (Major: Computer Science)", …],
+ "risks": ["Fall 2028 (202810) has no published catalog (0 sections): its requirements were not planned, …",
+           "Unpublished term(s) Fall 2028 (202810) were skipped; do not report them as offering nothing."]}
 ```
+
+`assumptions` is the honesty contract: every `source: "default"` row is a server
+guess, so the agent must ask `preferences_missing` before presenting the plan as
+the student's choice. Pins apply to the first planned term only; every other
+constraint applies to every term. `include_summer=false` with an explicitly
+requested summer term leaves it unplanned and says so in `risks`.
 
 ### `unw_offering_matrix(courses=["CYS 4245","CYS 2005","ATTRIBUTE NATS"])`
 
 ```json
 {"observed_terms": ["202520","202530","202610","202620","202630","202710","202720"],
- "observed_labels": ["Spring 2026","Summer 2026","Fall 2026","Spring 2027","Summer 2027","Fall 2027","Spring 2028"],
- "courses": [{"key": "CYS 4245", "pattern": "fall-only", "offered_terms": ["202710"],
-              "summary": "fall-only; offered in Fall 2027",
-              "terms": [{"term": "202520", "offered": false, "sections": 0}, …,
-                        {"term": "202710", "offered": true, "sections": 1,
-                         "open_sections": 1, "instructors": ["Faculty, Unassigned"]}, …]},
-             {"key": "CYS 2005", "pattern": "unknown", "offered_terms": [],
-              "summary": "never observed in 7 cached terms (…)"}, …]}
+ "terms_without_catalog": ["202810","202820"],
+ "courses": [{"key": "CYS 4245", "pattern": "insufficient_history", "observed_count": 1,
+              "weak_evidence": true, "offered_terms": ["202710"],
+              "summary": "only 1 observation (Fall 2027); not enough evidence to call a season"},
+             {"key": "EVERY-TERM EXAMPLE", "pattern": "every-term", "observed_count": 6,
+              "weak_evidence": false, "offered_terms": ["202520","202610",…]},
+             {"key": "CYS 2005", "pattern": "unknown", "observed_count": 0,
+              "summary": "never observed in 7 published terms (…)"}, …]}
 ```
+
+A single observation is `insufficient_history`, never `fall-only`: a brand-new
+course must not be deferred to a season on one data point. Unpublished terms
+(`sections: 0`, e.g. Fall 2028 before Banner publishes it) are excluded from the
+columns *and* from the inference, so they cannot turn into false "not offered"
+evidence.
 
 ### `unw_banner_plans(term="202620")`
 
@@ -433,11 +461,20 @@ This mirrors the server `instructions`; the full text is advertised on
    **Do** confirm their declared program: students often say "ministry minor"
    while the audit says "Bible" (and an audit can carry both). Report
    discrepancies; never silently pick one.
-3. **Ask before assuming:** credit budget, blocked days/times, earliest start,
-   latest end, summer willingness, graduation target.
+3. **Ask before assuming:** call `unw_planning_intake()` and ask its questions
+   (credit load, blocked days/times, time window, delivery, RMP weight, summer,
+   graduation target, work hours, program confirmation, retakes, prior credit,
+   holds, instructors to avoid). `unw_roadmap` reports the defaults it used in
+   `assumptions` and the unasked axes in `preferences_missing`; defaults are not
+   preferences.
 4. **Priority order:** scarce major-required courses first (check
-   `unw_offering_matrix`; never propose a fall-only course for spring), then the
-   major credit pool, then gen-ed by highest RMP rating.
+   `unw_offering_matrix`; never propose a fall-only course for spring, and treat
+   `insufficient_history` as unknown), then the major credit pool, then gen-ed by
+   highest RMP rating. A `no_catalog` term is unpublished — never describe it as
+   "not offered". `constraints_unenforced` means a day/time/delivery preference
+   could not be checked because the sections are TBA; do not claim it was honored.
+   Planning term by term, pass earlier picks as `assume_completed` so the next
+   draft neither repeats them nor blocks their dependents.
 5. **Never propose a time conflict.** Run `unw_conflicts` on the final CRN set
    and show the ASCII grid.
 6. **Never write to Banner plans without explicit user confirmation**, and

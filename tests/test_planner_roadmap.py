@@ -96,7 +96,9 @@ def test_fall_only_course_rolls_to_fall_term(tmp_path):
         )
     ])
     snapshots = {
-        "202620": snapshot("202620", []),
+        # Published spring term with no CYS section: absence of the course is
+        # real evidence here (an empty snapshot would mean "unpublished").
+        "202620": snapshot("202620", [section("1", "BIB", "1000", "202620")]),
         "202710": snapshot("202710", [section("9001", "CYS", "4245", "202710")]),
     }
     planner = Planner(

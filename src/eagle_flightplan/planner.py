@@ -62,6 +62,48 @@ class PlannerError(RuntimeError):
     pass
 
 
+class NoCatalogError(PlannerError):
+    """The term has no published catalog (a snapshot with zero sections).
+
+    Distinct from "none of the requirement's courses is offered this term": an
+    empty snapshot means Banner has not published the term yet, so nothing can be
+    planned and no absence may be reported as evidence.
+    """
+
+
+#: Banner ``instructionalMethod`` values that never require attending a room.
+_ONLINE_METHODS = ("online", "virtual", "web", "remote", "distance", "asynchronous")
+#: Methods that mix in-person and remote attendance.
+_HYBRID_METHODS = ("blended", "hybrid", "hyflex")
+
+
+def delivery_class(section: Section) -> str:
+    """Classify a section as ``online`` / ``hybrid`` / ``in_person`` / ``unknown``.
+
+    Banner reports ``instructionalMethod`` (e.g. "Face to Face", "Online",
+    "Blended", "Activity/Experience", "HyFlex") and a campus ("Main Campus",
+    "Virtual"). Method wins; campus is the fallback. Unknown is not a guess: a
+    section with neither field stays ``unknown``.
+    """
+    method = (section.instructional_method or "").strip().lower()
+    campus = (section.campus or "").strip().lower()
+    if method:
+        if any(token in method for token in _ONLINE_METHODS):
+            return "online"
+        if any(token in method for token in _HYBRID_METHODS):
+            return "hybrid"
+        return "in_person"
+    if "virtual" in campus:
+        return "online"
+    if campus:
+        return "in_person"
+    return "unknown"
+
+
+#: Constraints a caller can supply, for honest "could not be enforced" reporting.
+_TIME_FILTERS = ("avoid_days", "earliest", "latest")
+
+
 # --------------------------------------------------------------------------- #
 # inputs
 # --------------------------------------------------------------------------- #
@@ -87,6 +129,21 @@ class Constraints(BaseModel):
     credit_overrides: dict[str, float] = Field(default_factory=dict)
     #: Explicitly allow pins for courses the audit already credits (repeat).
     allow_repeat: bool = False
+    #: Course codes the student has already completed or will complete before this
+    #: term (earlier planned terms, transfer, AP). Merged into the completed set so
+    #: a standalone future-term draft neither re-places them nor blocks their
+    #: dependents.
+    assume_completed: list[str] = Field(default_factory=list)
+    #: Delivery preference. ``online`` admits only online sections; ``in_person``
+    #: admits in-person and hybrid sections; ``any`` filters nothing.
+    delivery: Literal["any", "online", "in_person"] = "any"
+
+    def assumed_codes(self) -> set[str]:
+        return {
+            code.strip().upper().replace("  ", " ")
+            for code in self.assume_completed
+            if code.strip()
+        }
 
 
 class RatingInfo(BaseModel):
@@ -718,6 +775,14 @@ class DraftPlan(BaseModel):
     min_credits: float = 0.0
     min_credits_met: bool = True
     credit_overrides: dict[str, float] = Field(default_factory=dict)
+    #: Constraints the caller supplied that could not actually be evaluated for
+    #: the placed sections (no published meeting times, no delivery data). Never
+    #: report these as honored.
+    constraints_unenforced: list[str] = Field(default_factory=list)
+    #: True when every placed selection has no published meeting time.
+    all_selections_unscheduled: bool = False
+    #: Course codes assumed completed for this draft (passed into prerequisites).
+    assumed_completed: list[str] = Field(default_factory=list)
 
     @property
     def crns(self) -> list[str]:
@@ -738,6 +803,9 @@ class Roadmap(BaseModel):
     terms: list[RoadmapTerm] = Field(default_factory=list)
     final_remaining: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    #: Terms whose catalog is not published (zero sections); nothing was planned
+    #: there and their absence is not evidence about offerings.
+    terms_without_catalog: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -892,6 +960,12 @@ class Planner:
             if people and all(person in avoided for person in people):
                 names = ", ".join(person.name for person in section.faculty if person.name)
                 return False, f"taught only by avoided instructor(s): {names}", False
+        if constraints.delivery != "any":
+            kind = delivery_class(section)
+            if constraints.delivery == "online" and kind != "online":
+                return False, f"delivery: section is {kind}, not online", False
+            if constraints.delivery == "in_person" and kind not in {"in_person", "hybrid"}:
+                return False, f"delivery: section is {kind}, not in person", False
         if constraints.earliest or constraints.latest:
             for meeting in section.meetings:
                 if not meeting.scheduled:
@@ -919,9 +993,19 @@ class Planner:
     ) -> DraftPlan:
         constraints = constraints or Constraints()
         passed = set(self.passed if passed is None else passed)
+        assumed = constraints.assumed_codes()
+        passed |= assumed
         snapshot = self.snapshots.get(term)
         if snapshot is None:
-            raise PlannerError(f"No catalog snapshot for term {term}. Fetch it first.")
+            raise NoCatalogError(
+                f"No catalog snapshot for term {term}. Fetch it first."
+            )
+        if len(snapshot) == 0:
+            raise NoCatalogError(
+                f"{term_label(term)} ({term}) has no published catalog (0 sections). "
+                "Nothing can be planned for it yet; report the term as unpublished "
+                "instead of saying its courses are not offered."
+            )
         pool = [r for r in (requirements if requirements is not None else self.requirements) if not r.satisfied]
 
         plan = DraftPlan(
@@ -929,6 +1013,7 @@ class Planner:
             label=term_label(term),
             min_credits=constraints.min_credits,
             credit_overrides={str(crn): float(hours) for crn, hours in constraints.credit_overrides.items()},
+            assumed_completed=sorted(assumed),
         )
         selected: list[Section] = []
         selected_codes: set[str] = set()
@@ -1021,6 +1106,28 @@ class Planner:
                     f"{section.code} CRN {section.crn} has an unscheduled (TBA) meeting "
                     "component; verify its time. Conflicts cannot be checked for it."
                 )
+        placed_sections = [
+            section
+            for section in (snapshot.by_crn(selection.crn) for selection in plan.selections)
+            if section is not None
+        ]
+        unenforced: list[str] = []
+        if placed_sections:
+            supplied_time = [name for name in _TIME_FILTERS if getattr(constraints, name, None)]
+            if supplied_time and all(section.unscheduled for section in placed_sections):
+                unenforced.extend(supplied_time)
+                plan.all_selections_unscheduled = True
+            if constraints.delivery != "any" and all(
+                delivery_class(section) == "unknown" for section in placed_sections
+            ):
+                unenforced.append("delivery")
+        if unenforced:
+            plan.constraints_unenforced = unenforced
+            plan.warnings.append(
+                f"{plan.term}: {', '.join(unenforced)} could not be enforced because none of "
+                "the placed sections has a published meeting time or delivery mode (TBA). "
+                "Do not report these preferences as honored yet."
+            )
         plan.total_credits = round(
             sum(self._credits(section, constraints) for section in selected), 2
         )
@@ -1605,21 +1712,34 @@ class Planner:
             requirement.id: requirement.applied_count for requirement in self.requirements
         }
         passed = set(self.passed)
+        passed |= constraints.assumed_codes()
         roadmap = Roadmap(start_term=terms[0] if terms else "")
-        for term in terms:
+        for index, term in enumerate(terms):
             label = term_label(term)
             snapshot = self.snapshots.get(term)
-            if snapshot is None:
+            if snapshot is None or len(snapshot) == 0:
+                roadmap.terms_without_catalog.append(term)
                 roadmap.terms.append(
                     RoadmapTerm(
                         term=term,
                         label=label,
                         status="no_catalog",
                         remaining=[f"{r.label} ({r.parent_group})" for r in remaining],
-                        notes=self._availability_notes(remaining),
+                        notes=[
+                            "catalog not published (0 sections): nothing was planned and its "
+                            "absence is not evidence about offerings",
+                            *self._availability_notes(remaining),
+                        ],
                     )
                 )
                 continue
+            # Pins name sections in the requested term only; carrying them into
+            # later terms would try to place the same CRN twice.
+            term_constraints = constraints
+            if index and (constraints.required_crns or constraints.required_courses):
+                term_constraints = constraints.model_copy(
+                    update={"required_crns": [], "required_courses": []}
+                )
             adjusted = [
                 requirement.model_copy(
                     update={
@@ -1629,7 +1749,7 @@ class Planner:
                 )
                 for requirement in remaining
             ]
-            draft = self.draft(term, constraints, requirements=adjusted, passed=passed)
+            draft = self.draft(term, term_constraints, requirements=adjusted, passed=passed)
             for selection in draft.selections:
                 section = snapshot.by_crn(selection.crn)
                 passed.add(selection.course.upper())

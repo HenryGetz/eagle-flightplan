@@ -477,6 +477,8 @@ class OfferingPattern(str, Enum):
     SPRING_AND_SUMMER = "spring+summer"
     IRREGULAR = "irregular"
     UNKNOWN = "unknown"
+    #: Fewer than two observations: not enough evidence to call a season.
+    INSUFFICIENT_HISTORY = "insufficient_history"
 
 
 class OfferingHistory(BaseModel):
@@ -490,14 +492,41 @@ class OfferingHistory(BaseModel):
     def offered_terms(self) -> list[str]:
         return [entry.term for entry in self.terms if entry.offered]
 
+    @property
+    def observed_count(self) -> int:
+        """How many terms actually offered this target."""
+        return len(self.offered_terms)
+
+    @property
+    def weak_evidence(self) -> bool:
+        """One observation is not a pattern (a new course is not ``fall-only``)."""
+        return 0 < self.observed_count < 2
+
     def offered_in(self, term: str) -> bool:
         return any(entry.term == term and entry.offered for entry in self.terms)
+
+
+def _usable_terms(terms: Sequence[str], snapshots: dict[str, TermSnapshot]) -> list[str]:
+    """Terms whose catalog is actually published.
+
+    An empty snapshot is an unpublished term, not a term where the course was
+    absent; counting it would turn "not published yet" into "not offered".
+    """
+    usable: list[str] = []
+    for term in terms:
+        snapshot = snapshots.get(term)
+        if snapshot is None or len(snapshot) == 0:
+            continue
+        usable.append(term)
+    return usable
 
 
 def _pattern(terms: Sequence[TermOffering]) -> OfferingPattern:
     offered = [entry.term for entry in terms if entry.offered]
     if not offered:
         return OfferingPattern.UNKNOWN
+    if len(offered) < 2:
+        return OfferingPattern.INSUFFICIENT_HISTORY
     springs = [term for term in offered if term_season(term) in {"Spring", "Winter"}]
     falls = [term for term in offered if term_season(term) == "Fall"]
     summers = [term for term in offered if term_season(term) == "Summer"]
@@ -522,10 +551,8 @@ def offering_history_course(
     course: CourseKey, terms: Sequence[str], snapshots: dict[str, TermSnapshot]
 ) -> OfferingHistory:
     entries: list[TermOffering] = []
-    for term in terms:
-        snapshot = snapshots.get(term)
-        if snapshot is None:
-            continue
+    for term in _usable_terms(terms, snapshots):
+        snapshot = snapshots[term]
         sections = snapshot.by_course(course.subject, course.number)
         entries.append(
             TermOffering(
@@ -551,10 +578,8 @@ def offering_history_attribute(
     attribute: str, terms: Sequence[str], snapshots: dict[str, TermSnapshot]
 ) -> OfferingHistory:
     entries: list[TermOffering] = []
-    for term in terms:
-        snapshot = snapshots.get(term)
-        if snapshot is None:
-            continue
+    for term in _usable_terms(terms, snapshots):
+        snapshot = snapshots[term]
         sections = snapshot.by_attribute(attribute)
         entries.append(
             TermOffering(
@@ -600,10 +625,8 @@ def offering_matrix(
             if key in rows:
                 continue
             entries = []
-            for term in terms:
-                snapshot = snapshots.get(term)
-                if snapshot is None:
-                    continue
+            for term in _usable_terms(terms, snapshots):
+                snapshot = snapshots[term]
                 sections = snapshot.by_subject(subject)
                 entries.append(
                     TermOffering(

@@ -108,13 +108,44 @@ recorded in `Selection.covers` and no duplicate section is added.
 
 ## Roadmap
 
-`roadmap(terms)` runs `draft` per term while carrying forward:
+`roadmap(terms, constraints, include_summer=...)` runs `draft` per term while
+carrying forward:
 
 * `passed` course codes (placed in earlier terms count for later prereqs),
+  seeded with `constraints.assume_completed` (AP/transfer or earlier planned terms),
 * per-requirement credit/count progress (so a pool filled in Spring is not
   refilled in Fall),
 * requirements still open, and the terms with no published catalog (reported as
   `no_catalog`, never invented).
+
+Every other constraint (`max_credits`, `min_credits`, `avoid_days`,
+`earliest`/`latest`, `avoid_instructors`, `exclude_arrangement`, `delivery`,
+`hours`) applies to **every** term; pins (`required_crns`/`required_courses`)
+apply to the **first** term only, because a pin names a section in one term.
+`include_summer=False` filters summer terms out of `terms`; an explicitly
+requested summer term is therefore only planned with `include_summer=True`.
+
+A term snapshot with **zero sections** is unpublished, not empty: `roadmap`
+marks it `no_catalog`, plans nothing there, records it in
+`terms_without_catalog`, and keeps its requirements open for the next published
+term. `Planner.draft` raises `NoCatalogError` for such a term, which the MCP
+surface reports as `error_type: "NoCatalog"` — never as a 0-credit plan and never
+as "the courses are not offered".
+
+### Constraint honesty
+
+`DraftPlan.constraints_unenforced` lists day/time/delivery preferences that could
+not actually be evaluated: when every placed section is unscheduled (Banner has
+not published its meeting times yet) `avoid_days`/`earliest`/`latest` are
+vacuous, and when no placed section reports a delivery mode `delivery` is
+vacuous. The draft adds a warning and `all_selections_unscheduled`; the caller
+must not report the preference as honored. `delivery_class()` reads Banner's
+`instructionalMethod` first ("Online"/"Virtual" → online, "Blended"/"HyFlex" →
+hybrid, everything else → in-person) and falls back to the campus ("Virtual").
+
+`Constraints.assume_completed` merges codes into the completed/prerequisite set,
+so a standalone Spring draft neither re-places a course already planned for Fall
+nor reports its dependents as `prereq_blocked`.
 
 `verify_draft(draft, snapshot)` re-checks every CRN exists, open sections have
 seats, credits add up, `find_conflicts` is empty, prerequisites are verified and
@@ -165,7 +196,14 @@ roadmap therefore carries it to the next Fall once that section opens.
 
 `captures/offering_matrix.md` has the full 43-target table. Pattern legend:
 `every-term` = observed in both a spring and a fall; `fall-only` / `spring-only`
-= observed in one season only; `unknown` = never observed in seven terms.
+= observed in one season only; `insufficient_history` = a single observation (a
+new course is not "fall-only"); `unknown` = never observed.
+
+Only terms whose snapshot has **sections > 0** are used. An unpublished term
+(Fall 2028 and Spring 2029 return 0 sections) would otherwise read as "the course
+is not offered", which turns missing data into a false constraint; it is listed
+in `terms_without_catalog` instead. A season label needs at least two
+observations, and each row carries `observed_count` plus `weak_evidence`.
 
 | target | Sp26 | Su26 | Fa26 | Sp27 | Su27 | Fa27 | Sp28 | pattern |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -226,8 +264,10 @@ can only advance Python (COS 2005) plus gen-ed and electives.
 * **Seven terms of history** and only one Fall observation for the newest
   Cybersecurity courses; "fall-only" can mean "alternate-year".
 * **Future catalogs are drafts.** 202710/202720 are searchable but not
-  registration-eligible; sections may be closed (`openSection: false`) or lack
-  instructors. Fall 2027 CYS 4245/4466 show "Faculty, Unassigned".
+  registration-eligible; sections may be closed (`openSection: false`), lack
+  instructors (Fall 2027 CYS 4245/4466 show "Faculty, Unassigned") or have no
+  meeting time at all. Time-of-day preferences are unenforceable on such rows and
+  are reported in `constraints_unenforced` instead of silently passing.
 * **The draft is a plan, not a registration action.** Nothing is written to the
   Banner planner from this module (see `banner/plan.py` for that API).
 * RMP lookups include a polite delay and are cached in `.state/ratings.json`

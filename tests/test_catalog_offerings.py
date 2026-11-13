@@ -217,6 +217,7 @@ def test_offering_history_and_patterns():
     snaps = {
         "202520": snapshot("202520", [section("1", "BIB", "4825", term="202520")]),
         "202610": snapshot("202610", [section("2", "BIB", "4825", term="202610")]),
+        # Zero-section snapshot: unpublished term, not evidence of absence.
         "202620": snapshot("202620", []),
         "202710": snapshot("202710", [section("3", "BIB", "4825", term="202710")]),
     }
@@ -224,20 +225,61 @@ def test_offering_history_and_patterns():
     assert history.offered_terms == ["202520", "202610", "202710"]
     assert history.pattern is OfferingPattern.EVERY_TERM
     assert history.offered_in("202620") is False
+    # The unpublished term is not a column in the history at all.
+    assert [entry.term for entry in history.terms] == ["202520", "202610", "202710"]
+    assert history.observed_count == 3
+    assert history.weak_evidence is False
 
     fall_only = offering_history_course(
         CourseKey(subject="CYS", number="4245"),
-        ["202620", "202710"],
-        {"202620": snapshot("202620", []), "202710": snapshot("202710", [section("4", "CYS", "4245", term="202710")])},
+        ["202610", "202710"],
+        {
+            "202610": snapshot("202610", [section("4", "CYS", "4245", term="202610")]),
+            "202710": snapshot("202710", [section("6", "CYS", "4245", term="202710")]),
+        },
     )
     assert fall_only.pattern is OfferingPattern.FALL_ONLY
 
     spring_only = offering_history_course(
         CourseKey(subject="BIB", number="3805"),
-        ["202620", "202710"],
-        {"202620": snapshot("202620", [section("5", "BIB", "3805", term="202620")]), "202710": snapshot("202710", [])},
+        ["202520", "202620"],
+        {
+            "202520": snapshot("202520", [section("5", "BIB", "3805", term="202520")]),
+            "202620": snapshot("202620", [section("7", "BIB", "3805", term="202620")]),
+        },
     )
     assert spring_only.pattern is OfferingPattern.SPRING_ONLY
+
+
+def test_single_observation_is_insufficient_history():
+    """A brand-new fall course is not "fall-only" on one observation."""
+    history = offering_history_course(
+        CourseKey(subject="CYS", number="4245"),
+        ["202620", "202710"],
+        {
+            "202620": snapshot("202620", [section("1", "BIB", "1000", term="202620")]),
+            "202710": snapshot("202710", [section("2", "CYS", "4245", term="202710")]),
+        },
+    )
+    assert history.pattern is OfferingPattern.INSUFFICIENT_HISTORY
+    assert history.observed_count == 1
+    assert history.weak_evidence is True
+
+
+def test_offering_history_ignores_unpublished_terms():
+    """Fall 2028/Spring 2029 (0 sections) must not count as "not offered"."""
+    history = offering_history_course(
+        CourseKey(subject="BIB", number="4825"),
+        ["202610", "202710", "202810", "202820"],
+        {
+            "202610": snapshot("202610", [section("1", "BIB", "4825", term="202610")]),
+            "202710": snapshot("202710", [section("2", "BIB", "4825", term="202710")]),
+            "202810": snapshot("202810", []),
+            "202820": snapshot("202820", []),
+        },
+    )
+    assert [entry.term for entry in history.terms] == ["202610", "202710"]
+    assert history.pattern is OfferingPattern.FALL_ONLY
 
 
 def test_attribute_history_and_matrix_rendering():
