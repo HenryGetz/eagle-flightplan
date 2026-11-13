@@ -456,9 +456,21 @@ def test_roadmap_payload_reports_assumptions_and_missing_preferences(monkeypatch
         "field": "max_credits",
         "value": 12.0,
         "source": "requested",
-        "note": "16 is the server default; confirm the student's real load",
+        "note": "credit cap supplied by the caller",
     }
     assert by_field["avoid_days"]["source"] == "requested"
+    assert by_field["avoid_days"]["note"] == "blocked days supplied by the caller"
+    assert by_field["time_window"]["note"] == "earliest/latest bound supplied by the caller"
+    assert by_field["delivery"]["note"] == "delivery preference supplied by the caller"
+    # A default never borrows the "supplied by the caller" wording.
+    default_rows = mcp_server.roadmap_payload("202710", terms="202710")["assumptions"]
+    defaults = {row["field"]: row for row in default_rows}
+    assert defaults["avoid_days"]["note"] == "no blocked days supplied; every weekday is available"
+    assert defaults["time_window"]["note"] == "no earliest/latest bound supplied"
+    assert defaults["delivery"]["note"] == "any admits online, hybrid and in-person sections"
+    for row in default_rows:
+        if row["source"] == "default":
+            assert "supplied by the caller" not in row["note"], row
     assert by_field["assume_completed"]["source"] == "requested"
     assert answered["constraints"]["delivery"] == "online"
     assert answered["constraints"]["assume_completed"] == ["COS 2005"]
@@ -663,6 +675,10 @@ def test_intake_payload_returns_facts_questions_and_defaults(monkeypatch):
     question = {row["id"]: row for row in payload["questions"]}
     assert question["credit_load"]["default"] == {"min_credits": 0, "max_credits": 16}
     assert question["delivery"]["options"] == ["any", "online", "in_person"]
+    assert question["rmp_priority"]["options"] == ["max_rated"]
+    assert question["rmp_priority"]["supported"] is False
+    assert question["delivery"]["supported"] is True
+    assert question["credit_load"]["supported"] is True
     assert "Spring 2028" in question["graduation_target"]["default"]
     assert all(row["prompt"] and row["why"] for row in payload["questions"])
 
@@ -712,3 +728,163 @@ def test_intake_tool_schema_and_readonly_description() -> None:
         "include_summer",
     ):
         assert key in roadmap, key
+
+
+# --------------------------------------------------------------------------- #
+# roadmap honesty fields, assumptions, filler sections
+# --------------------------------------------------------------------------- #
+def test_roadmap_rows_hoist_unenforced_constraints(monkeypatch, tmp_path):
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Any CYS",
+                pick_n_of=1,
+                options=[CourseRef(subject="CYS", number="4245", status="option")],
+            )
+        ]
+    )
+    snapshots = {
+        "202710": snapshot(
+            "202710", [section("100", "CYS", "4245", "202710", scheduled=False)]
+        ),
+        "202720": snapshot("202720", [section("200", "CYS", "4245", "202720")]),
+    }
+    planner = planner_for(tmp_path, audit, snapshots, terms_order=["202710", "202720"])
+    _install_planner(monkeypatch, planner, snapshots, audit)
+
+    payload = mcp_server.roadmap_payload(
+        "202710",
+        terms=["202710", "202720"],
+        avoid_days=["F"],
+        earliest="08:00",
+        latest="12:00",
+    )
+    rows = {row["term"]: row for row in payload["planned"]}
+    assert rows["202710"]["constraints_unenforced"] == ["avoid_days", "earliest", "latest"]
+    assert rows["202710"]["all_selections_unscheduled"] is True
+    assert rows["202720"]["constraints_unenforced"] == []
+    assert rows["202720"]["all_selections_unscheduled"] is False
+    assert payload["constraints_unenforced"] == [
+        {
+            "term": "202710",
+            "label": "Fall 2027",
+            "constraints": ["avoid_days", "earliest", "latest"],
+        }
+    ]
+    assert any("could not enforce" in risk for risk in payload["risks"])
+    # The draft payload keeps the same fields for callers that descend into it.
+    assert rows["202710"]["draft"]["constraints_unenforced"] == [
+        "avoid_days",
+        "earliest",
+        "latest",
+    ]
+
+
+def test_roadmap_assumptions_never_mix_default_and_requested_notes(monkeypatch, tmp_path):
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Any CYS",
+                pick_n_of=1,
+                options=[CourseRef(subject="CYS", number="4245", status="option")],
+            )
+        ]
+    )
+    snapshots = {"202710": snapshot("202710", [section("100", "CYS", "4245", "202710")])}
+    planner = planner_for(tmp_path, audit, snapshots, terms_order=["202710"])
+    _install_planner(monkeypatch, planner, snapshots, audit)
+
+    payload = mcp_server.roadmap_payload(
+        "202710",
+        terms="202710",
+        avoid_days=["Sat"],
+        earliest="09:00",
+        delivery="online",
+    )
+    rows = {row["field"]: row for row in payload["assumptions"]}
+    assert rows["avoid_days"]["source"] == "requested"
+    assert rows["avoid_days"]["note"] == "blocked days supplied by the caller"
+    assert rows["delivery"]["source"] == "requested"
+    assert rows["delivery"]["note"] == "delivery preference supplied by the caller"
+    assert rows["max_credits"]["source"] == "default"
+    assert rows["max_credits"]["note"].startswith("16 is the server default")
+    assert rows["avoid_instructors"]["source"] == "default"
+    assert rows["avoid_instructors"]["note"] == "no instructor exclusions supplied"
+    assert rows["time_window"]["note"] == "earliest/latest bound supplied by the caller"
+
+
+def test_failed_pin_fillers_are_named_and_never_called_substitutes(monkeypatch, tmp_path):
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Electives",
+                options=[
+                    CourseRef(subject="MIN", number="3065", status="option"),
+                    CourseRef(subject="MIN", number="3066", status="option"),
+                ],
+            )
+        ]
+    )
+    snapshots = {
+        "202620": snapshot(
+            "202620",
+            [
+                section("3065", "MIN", "3065", "202620", credits=4.0),
+                # A different day: two fillers must not conflict with each other.
+                section(
+                    "3066",
+                    "MIN",
+                    "3066",
+                    "202620",
+                    credits=4.0,
+                    days=(Weekday.TUE,),
+                ),
+            ],
+        )
+    }
+    planner = planner_for(tmp_path, audit, snapshots, terms_order=["202620"])
+    # Simulate a pin for a course the audit already credits (COS 4841).
+    planner.passed = {"COS 4841"}
+    _install_planner(monkeypatch, planner, snapshots, audit)
+
+    payload = mcp_server.draft_payload(
+        "202620", required_courses=["COS 4841"], min_credits=8, max_credits=16
+    )
+    body = payload["draft"]
+    assert payload["ok"] is False
+    assert body["pinned"][0]["outcome"] == "already_completed"
+    fillers = body["fillers"]
+    assert fillers, body["selections"]
+    assert {row["course"] for row in fillers} == {"MIN 3066"}
+    assert "does not satisfy the pin" in fillers[0]["reason"]
+    # The sections that still occupy the budget are named, never as a substitute.
+    substitutions = body["substitutions"]
+    assert {row["course"] for row in substitutions} == {"MIN 3065", "MIN 3066"}
+    assert all("does not satisfy" in row["reason"] for row in substitutions)
+    assert all({"crn", "course", "requirement", "credits"} <= set(row) for row in substitutions)
+    assert [row["course"] for row in body["selections"]] == ["MIN 3065", "MIN 3066"]
+    assert body["selections"][1]["filler"] is True
+
+    # The one-call semester report repeats the fillers and warns about them.
+    monkeypatch.setattr(
+        mcp_server,
+        "conflicts_payload",
+        lambda *a, **k: {"conflict_count": 0, "conflicts": [], "unscheduled": []},
+    )
+    monkeypatch.setattr(
+        mcp_server, "registration_window_payload", lambda *a, **k: {"windows": []}
+    )
+    monkeypatch.setattr(
+        mcp_server, "plans_payload", lambda *a, **k: {"ok": True, "count": 0, "plans": []}
+    )
+    semester = mcp_server.semester_plan_payload(
+        "202620", required_courses=["COS 4841"], min_credits=8, max_credits=16
+    )
+    assert semester["ok"] is False
+    assert {row["course"] for row in semester["fillers"]} == {"MIN 3066"}
+    assert {row["course"] for row in semester["substitutions"]} == {"MIN 3065", "MIN 3066"}
+    assert any(
+        "after a failed pin" in warning and "MIN 3066" in warning
+        for warning in semester["warnings"]
+    )
+    assert "after a failed pin" in semester["next_action"]

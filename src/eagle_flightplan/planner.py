@@ -727,6 +727,9 @@ class Selection(BaseModel):
     #: section is still placed (unknown is not proof of failure) but must be
     #: checked before registration.
     prereq_unverified: bool = False
+    #: True when the selection was added by the minimum-load top-up rather than
+    #: by a requirement. A filler never substitutes for a failed pin.
+    filler: bool = False
 
 
 class Unplaced(BaseModel):
@@ -1597,6 +1600,7 @@ class Planner:
                         + self._rationale(requirement, section, instructor, rating, state)
                     ),
                     prereq_unverified=prereq_unverified,
+                    filler=True,
                 )
                 plan.selections.append(selection)
                 by_crn[section.crn] = selection

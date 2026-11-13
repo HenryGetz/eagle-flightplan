@@ -1217,6 +1217,7 @@ def _draft_selection_payload(selection, section: Section | None = None) -> dict:
         "partial_tba": selection.partial_tba,
         "requires_arrangement": selection.requires_arrangement,
         "repeated": selection.repeated,
+        "filler": selection.filler,
         "requirement_id": selection.requirement_id,
         "requirement": selection.requirement,
         "group": selection.group,
@@ -1278,6 +1279,37 @@ def _draft_payload(draft: DraftPlan, snapshot: TermSnapshot | None) -> dict:
         "rated_picks": len(rated),
         "unrated_picks": sum(1 for row in draft.selections if not row.rating.rated),
     }
+    failed_pins = [pin for pin in draft.pinned if pin.outcome != "placed"]
+    payload["fillers"] = [
+        {
+            "crn": selection.crn,
+            "course": selection.course,
+            "requirement": selection.requirement,
+            "group": selection.group,
+            "credits": selection.credits,
+            "reason": (
+                "fills the credit target after a failed pin; it does not satisfy the pin"
+                if failed_pins
+                else f"fills the {draft.min_credits:g}-credit minimum load"
+            ),
+        }
+        for selection in draft.selections
+        if selection.filler
+    ]
+    # When a pin fails, name every section that still occupies the plan: none of
+    # them is a substitute for the pinned course, and an agent must not imply one.
+    payload["substitutions"] = [
+        {
+            "crn": selection.crn,
+            "course": selection.course,
+            "requirement": selection.requirement,
+            "group": selection.group,
+            "credits": selection.credits,
+            "reason": "occupies the credit budget; it does not satisfy the failed pin",
+        }
+        for selection in draft.selections
+        if failed_pins and selection.requirement_id != "pin"
+    ]
     if snapshot is not None:
         problems = verify_draft(draft, snapshot)
         payload["verify_problems"] = problems
@@ -1436,6 +1468,7 @@ def _semester_selection(row: dict[str, Any]) -> dict[str, Any]:
         "partial_tba": row.get("partial_tba"),
         "requires_arrangement": row.get("requires_arrangement"),
         "repeated": row.get("repeated"),
+        "filler": row.get("filler"),
     }
 
 
@@ -1576,6 +1609,16 @@ def _semester_next_action(
     )
     if arranged:
         extras.append(arranged)
+    filler = next(
+        (
+            warning
+            for warning in warnings
+            if "after a failed pin" in warning.lower() or "filler section" in warning.lower()
+        ),
+        None,
+    )
+    if filler:
+        extras.append(filler)
     return primary + plan_note + ((" " + " ".join(extras)) if extras else "")
 
 
@@ -1684,6 +1727,18 @@ def _semester_plan_payload_unlocked(
         conflict_data = {"count": 0, "summary": "no selections", "items": []}
 
     warnings = list(body.get("warnings") or [])
+    fillers = list(body.get("fillers") or [])
+    substitutions = list(body.get("substitutions") or [])
+    if (fillers or substitutions) and (body.get("pin_errors") or []):
+        named = fillers or substitutions
+        warnings.append(
+            f"{len(named)} section(s) occupy the credit target after a failed pin and do "
+            "not satisfy it: "
+            + "; ".join(
+                f"{item.get('course')} CRN {item.get('crn')} ({item.get('requirement')})"
+                for item in named
+            )
+        )
     tba_crns = [str(crn) for crn in (conflict_data.get("unscheduled_crns") or [])]
     partial_tba_crns = [
         str(crn) for crn in (conflict_data.get("partial_tba_crns") or [])
@@ -1852,6 +1907,8 @@ def _semester_plan_payload_unlocked(
         "partial_tba_crns": partial_tba_crns,
         "pinned": pinned,
         "pin_errors": body.get("pin_errors", []),
+        "fillers": fillers,
+        "substitutions": substitutions,
         "unplaced": body.get("unplaced", []),
         "warnings": warnings,
         "conflicts": conflict_data,
@@ -1960,6 +2017,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": [],
         "default": {"min_credits": 0, "max_credits": 16},
+        "supported": True,
         "required": True,
         "maps_to": "unw_roadmap/min_credits+max_credits, unw_plan_draft/min_credits+max_credits",
     },
@@ -1968,6 +2026,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         "why": "avoid_days removes every section that meets on those days.",
         "options": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         "default": [],
+        "supported": True,
         "required": True,
         "maps_to": "avoid_days",
     },
@@ -1976,6 +2035,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         "why": "earliest/latest bound every placed meeting; the default is unbounded.",
         "options": [],
         "default": {"earliest": None, "latest": None},
+        "supported": True,
         "required": False,
         "maps_to": "earliest/latest",
     },
@@ -1988,25 +2048,28 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": ["any", "online", "in_person"],
         "default": "any",
+        "supported": True,
         "required": True,
         "maps_to": "delivery",
     },
     "rmp_priority": {
-        "prompt": "How much should Rate My Professors weigh against schedule and load?",
+        "prompt": "Is ranking by the highest Rate My Professors rating acceptable?",
         "why": (
-            "Only the max_rated profile is implemented; say that instead of implying a "
-            "weighting the server cannot apply."
+            "Not implemented as a preference: the planner always ranks by max_rated, so "
+            "tell the student no alternative weighting exists today."
         ),
-        "options": ["ratings_first", "balanced", "ignore_ratings"],
-        "default": "ratings_first (the only supported profile)",
+        "options": ["max_rated"],
+        "default": "max_rated",
+        "supported": False,
         "required": False,
-        "maps_to": "not supported yet; profile=max_rated is fixed",
+        "maps_to": "not supported: profile is fixed at max_rated",
     },
     "summer": {
         "prompt": "Are you willing to take summer terms to finish sooner?",
         "why": "Summer terms are planned only when include_summer=true.",
         "options": [True, False],
         "default": False,
+        "supported": True,
         "required": True,
         "maps_to": "include_summer",
     },
@@ -2018,6 +2081,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": [],
         "default": "the audit's anticipated graduation term",
+        "supported": True,
         "required": True,
         "maps_to": "target_term",
     },
@@ -2026,6 +2090,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         "why": "Converts into blocked days/times and a realistic credit cap.",
         "options": [],
         "default": None,
+        "supported": False,
         "required": False,
         "maps_to": "advice only; feed the answer into blocked_days/credit_load",
     },
@@ -2037,6 +2102,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": ["keep all", "drop a minor", "add a program"],
         "default": "the audit's declared programs",
+        "supported": False,
         "required": True,
         "maps_to": "conversation; requirements come from the audit",
     },
@@ -2048,6 +2114,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": [],
         "default": False,
+        "supported": True,
         "required": False,
         "maps_to": "allow_repeat",
     },
@@ -2059,6 +2126,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": [],
         "default": [],
+        "supported": True,
         "required": False,
         "maps_to": "assume_completed",
     },
@@ -2070,6 +2138,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         ),
         "options": [],
         "default": "unknown",
+        "supported": False,
         "required": False,
         "maps_to": "conversation; not exposed by the audit",
     },
@@ -2078,6 +2147,7 @@ _PREFERENCE_QUESTIONS: dict[str, dict[str, Any]] = {
         "why": "avoid_instructors rejects sections taught only by those names.",
         "options": [],
         "default": [],
+        "supported": True,
         "required": False,
         "maps_to": "avoid_instructors",
     },
@@ -2254,49 +2324,65 @@ def _roadmap_assumptions(
     derived_terms: bool,
     include_summer: bool,
 ) -> list[dict[str, Any]]:
-    """Every value the roadmap used that the caller did not actually supply.
+    """Every value the roadmap used, marked as requested or as a default.
 
-    Defaults are assumptions, not preferences: the agent must ask before
-    presenting them as the student's choice.
+    ``source`` and ``note`` must agree: a requested value never carries the
+    "not supplied" wording, and a default always says it was not supplied, so an
+    agent cannot mistake one for the other.
     """
     rows: list[dict[str, Any]] = []
 
-    def add(field: str, value: Any, source: str, note: str) -> None:
+    def add(
+        field: str,
+        value: Any,
+        source: str,
+        *,
+        default_note: str,
+        requested_note: str = "requested value",
+    ) -> None:
+        note = requested_note if source == "requested" else default_note
         rows.append({"field": field, "value": value, "source": source, "note": note})
 
     add(
         "terms",
         list(planned_terms),
         "default" if derived_terms else "requested",
-        (
+        default_note=(
             "4 non-summer terms synthesized from start_term; pass terms= to choose the horizon"
-            if derived_terms
-            else "explicitly requested term list"
         ),
+        requested_note="explicitly requested term list",
     )
     add(
         "max_credits",
         constraints.max_credits,
         "default" if constraints.max_credits == 16 else "requested",
-        "16 is the server default; confirm the student's real load",
+        default_note="16 is the server default; confirm the student's real load",
+        requested_note="credit cap supplied by the caller",
     )
     add(
         "min_credits",
         constraints.min_credits,
         "default" if constraints.min_credits == 0 else "requested",
-        "0 means no minimum-load top-up",
+        default_note="0 means no minimum-load top-up",
+        requested_note="minimum load supplied by the caller",
     )
     add(
         "include_summer",
         include_summer,
         "requested",
-        "summer terms are excluded unless include_summer=true",
+        default_note="summer terms are excluded unless include_summer=true",
+        requested_note=(
+            "summer terms are planned because include_summer=true"
+            if include_summer
+            else "summer terms are excluded because include_summer=false"
+        ),
     )
     add(
         "avoid_days",
         [day.value for day in constraints.avoid_days],
         "default" if not constraints.avoid_days else "requested",
-        "no blocked days supplied; every weekday is available",
+        default_note="no blocked days supplied; every weekday is available",
+        requested_note="blocked days supplied by the caller",
     )
     add(
         "time_window",
@@ -2305,35 +2391,40 @@ def _roadmap_assumptions(
             "latest": constraints.latest.strftime("%H:%M") if constraints.latest else None,
         },
         "default" if not (constraints.earliest or constraints.latest) else "requested",
-        "no earliest/latest bound supplied",
+        default_note="no earliest/latest bound supplied",
+        requested_note="earliest/latest bound supplied by the caller",
     )
     add(
         "delivery",
         constraints.delivery,
         "default" if constraints.delivery == "any" else "requested",
-        "any admits online, hybrid and in-person sections",
+        default_note="any admits online, hybrid and in-person sections",
+        requested_note="delivery preference supplied by the caller",
     )
     add(
         "avoid_instructors",
         list(constraints.avoid_instructors),
         "default" if not constraints.avoid_instructors else "requested",
-        "no instructor exclusions supplied",
+        default_note="no instructor exclusions supplied",
+        requested_note="instructor exclusions supplied by the caller",
     )
     add(
         "assume_completed",
         list(constraints.assume_completed),
         "default" if not constraints.assume_completed else "requested",
-        (
+        default_note=(
             "prerequisites consider only courses the audit already credits; earlier planned "
             "terms are not assumed unless listed here"
         ),
+        requested_note="courses listed by the caller are treated as completed",
     )
     pins = list(constraints.required_crns) + list(constraints.required_courses)
     add(
         "pins",
         pins,
         "default" if not pins else "requested",
-        "pins apply to the first planned term only; later terms are planned from requirements",
+        default_note="no pins supplied; terms are planned from requirements",
+        requested_note="pins apply to the first planned term only",
     )
     return rows
 
@@ -2480,20 +2571,32 @@ def roadmap_payload(
     with _BANNER_LOCK:
         roadmap = planner.roadmap(planned_terms, constraints, include_summer=include_summer)
     rows = []
+    unenforced_summary: list[dict[str, Any]] = []
     for entry in roadmap.terms:
+        draft = entry.draft
         row: dict[str, Any] = {
             "term": entry.term,
             "label": entry.label,
             "status": entry.status,
             "remaining": entry.remaining,
             "notes": entry.notes,
+            # Hoisted from the draft so a caller can read the roadmap without
+            # descending into each term's draft.
+            "constraints_unenforced": list(draft.constraints_unenforced) if draft else [],
+            "all_selections_unscheduled": draft.all_selections_unscheduled if draft else False,
         }
-        if entry.draft is not None:
-            row["draft"] = _draft_payload(
-                entry.draft, snapshots.get(entry.term)
-            )
+        if draft is not None:
+            row["draft"] = _draft_payload(draft, snapshots.get(entry.term))
         else:
             row["draft"] = None
+        if row["constraints_unenforced"]:
+            unenforced_summary.append(
+                {
+                    "term": entry.term,
+                    "label": entry.label,
+                    "constraints": row["constraints_unenforced"],
+                }
+            )
         rows.append(row)
 
     risks: list[str] = list(roadmap.warnings)
@@ -2532,6 +2635,12 @@ def roadmap_payload(
             "Unpublished term(s) "
             + ", ".join(f"{term_label(term)} ({term})" for term in roadmap.terms_without_catalog)
             + " were skipped; do not report them as offering nothing."
+        )
+    for item in unenforced_summary:
+        risks.append(
+            f"{item['label']} ({item['term']}) could not enforce "
+            f"{', '.join(item['constraints'])}: the placed sections are TBA, so these "
+            "preferences are not yet verified."
         )
     if not include_summer:
         summer_asked = [term for term in wanted if term_label(term).startswith("Summer")]
@@ -2585,6 +2694,7 @@ def roadmap_payload(
         "student": audit.student_name,
         "catalogs": catalogs,
         "planned": rows,
+        "constraints_unenforced": unenforced_summary,
         "terms_without_catalog": list(roadmap.terms_without_catalog),
         "final_remaining": roadmap.final_remaining,
         "risks": risks,

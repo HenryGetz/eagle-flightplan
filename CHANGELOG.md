@@ -46,6 +46,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `unw_roadmap` rows expose `constraints_unenforced` and
+  `all_selections_unscheduled` directly (hoisted from the term draft) plus a
+  top-level `constraints_unenforced` summary and a matching `risks` line, so a
+  caller does not have to descend into each draft to see that a day/time
+  preference could not be checked.
+- Roadmap `assumptions` no longer contradict themselves: a `source: "requested"`
+  row carries a requested note ("supplied by the caller"), and only defaults carry
+  the "not supplied" wording.
+- `unw_semester_plan` and `unw_plan_draft` report `fillers` (also `filler: true`
+  on the selection) for minimum-load top-ups, and `substitutions` naming every
+  section that still occupies the plan when a pin fails, each with
+  "does not satisfy the failed pin". The semester report adds a `warnings` line
+  and a `next_action` clause naming those CRNs, so neither field can be presented
+  as a substitute for the pinned course.
+- `unw_planning_intake` no longer offers Rate My Professors weightings the planner
+  cannot apply: `rmp_priority` lists only `max_rated`, and every question carries
+  `supported` (false for RMP weighting and the conversation-only axes).
 - `unw_roadmap` honors `include_summer`: it is now forwarded to the planner, so
   summer terms are planned when the flag is true (previously the flag was echoed
   but every summer term was silently dropped). Explicitly requested summer terms
