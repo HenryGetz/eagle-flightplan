@@ -1451,7 +1451,7 @@ def _semester_next_action(
     return primary + plan_note + ((" " + " ".join(extras)) if extras else "")
 
 
-def semester_plan_payload(
+def _semester_plan_payload_unlocked(
     term: str,
     max_credits: float = 16,
     profile: str = "max_rated",
@@ -1737,6 +1737,18 @@ def semester_plan_payload(
         "registration.error/banner_plans.error when present."
     )
     return result
+
+
+def semester_plan_payload(*args: Any, **kwargs: Any) -> dict:
+    """Serialize the whole one-shot Banner sequence behind ``_BANNER_LOCK``.
+
+    Draft, conflicts, registration window and Banner plans each bind/read the
+    session term. Holding the existing RLock around the entire sequence prevents
+    concurrent one-shot calls from interleaving term bindings; the nested calls
+    re-acquire the same RLock. There are no writes in this sequence.
+    """
+    with _BANNER_LOCK:
+        return _semester_plan_payload_unlocked(*args, **kwargs)
 
 
 def _term_key(term: str) -> tuple[int, int]:
