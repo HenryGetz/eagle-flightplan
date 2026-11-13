@@ -60,6 +60,26 @@ All notable changes to this project are documented here. The format follows
   adds `registration_standing`/`standing_note`.
 - Variable-credit selections without an `hours` override emit a warning naming
   the CRN and range (the planner still reserves the low end).
+- `snipe --dry-run --live` is now a usage error (exit 2) instead of silently
+  ignoring `--dry-run`; `--no-dry-run` requires `--live`.
+- The pre-T0 sleep now revalidates the session, refreshes the login if needed,
+  rebuilds the SSB client and re-reads the state path before opening the browser.
+  `SessionExpiredError`/`AuthError` map to `session_dead`; other T0 exceptions map
+  to `run_failed` with the capture path instead of a traceback.
+- Staging is delta-based: the just-submitted CRN must appear in the new page text
+  after Add, so an earlier "course added" notification cannot stage a later CRN.
+- Over-broad outcomes were tightened: bare `full`/`hold` no longer match; "You
+  have holds which do not prevent registration" is not a hold.
+- CLI exit codes are centralized: only `registered`, `already_registered`,
+  `waitlist_joined`, `dry_run` and `probe_ok` exit 0; every other status exits 1.
+- Live browser runs enforce `live && i_understand` inside `run_browser` in addition
+  to the CLI consent prompt.
+- Traffic capture filters to registration `unw.edu` XHR/JSON, skips assets, and
+  closes the listener/file after the run.
+- Term selection tries select2 v3 selectors before v4; `_seats_ready` tolerates
+  single-token course codes.
+- `pytest` now uses `pythonpath = ["src"]`, so bare `pytest -q` works from a clean
+  checkout.
 
 ### Changed
 

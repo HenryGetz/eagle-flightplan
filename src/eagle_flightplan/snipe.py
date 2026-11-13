@@ -14,6 +14,7 @@ meta automatically; any future direct HTTP write path must fetch that token firs
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -24,6 +25,7 @@ from typing import Callable, Iterable, Literal
 from pydantic import BaseModel, Field
 
 from .audit import AuditClient, Audit
+from .auth import AuthError, SessionExpiredError
 from .banner.plan import PlanClient
 from .banner.search import load_snapshot
 from .catalog import requirements_from_audit
@@ -65,8 +67,14 @@ AUTHORIZATION_SELECTORS = (
 #: Term selection is a select2 combobox; ``#txt_term`` is the hidden input.
 TERM_COMBO_SELECTORS = (
     "#s2id_txt_term",
+    "a.select2-choice",
+    ".select2-choice",
     "#term-select .select2-container",
     "span.select2-selection",
+)
+TERM_INPUT_SELECTORS = (
+    "input.select2-input",
+    "#s2id_txt_term input",
 )
 CONTINUE_SELECTORS = (
     "#term-go",
@@ -103,12 +111,17 @@ OUTCOME_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # "already registered" must win over the generic success phrase.
     ("already_registered", ("already registered", "duplicate registration", "already enrolled")),
     ("registered", ("registration successful", "registered for", "successfully registered", "web registered")),
-    ("closed", ("closed", "full", "no seats", "section is full")),
+    ("closed", ("section is full", "section closed", "course is full", "no seats", "closed")),
     ("waitlist", ("waitlist", "wait list")),
     ("prereq", ("prerequisite", "prereq", "test score", "placement")),
     ("conflict", ("time conflict", "conflicts with", "overlap")),
-    ("hold", ("hold", "advisor approval", "authorization required", "permit")),
+    ("hold", ("you have a hold", "you have holds", "registration hold", "advisor approval", "authorization required", "permit required")),
     ("session_dead", ("sign in", "login.microsoftonline.com", "session expired")),
+)
+
+#: Statuses that mean the requested action completed (or was a rehearsal/probe).
+SUCCESS_STATUSES = frozenset(
+    {"registered", "already_registered", "waitlist_joined", "dry_run", "probe_ok"}
 )
 
 
@@ -157,10 +170,18 @@ class SnipeResult(BaseModel):
 
 def classify_outcome(text: str) -> str:
     lowered = (text or "").lower()
+    nonblocking_hold = "do not prevent registration" in lowered
     for status, needles in OUTCOME_PATTERNS:
+        if status == "hold" and nonblocking_hold:
+            continue
         if any(needle in lowered for needle in needles):
             return status
     return "unknown"
+
+
+def exit_code_for(status: str) -> int:
+    """Only completed/rehearsed statuses are successful CLI exits."""
+    return 0 if status in SUCCESS_STATUSES else 1
 
 
 def authorize_live(
@@ -254,7 +275,24 @@ def _first_visible_selector(page, selectors: Iterable[str]) -> str | None:
     return None
 
 
+def _body_delta(before: str, after: str) -> str:
+    """New text added between two page snapshots."""
+    before = before or ""
+    after = after or ""
+    if after.startswith(before):
+        return after[len(before):]
+    # The page may re-render; return the suffix after the common prefix.
+    limit = min(len(before), len(after))
+    index = 0
+    while index < limit and before[index] == after[index]:
+        index += 1
+    return after[index:]
+
+
 def _staging_looks_successful(text: str, crn: str | None = None) -> bool:
+    """A stage is only credible when the new text names the just-submitted CRN."""
+    if not crn or crn not in (text or ""):
+        return False
     lowered = (text or "").lower()
     if any(pattern in lowered for pattern in STAGING_SUCCESS_PATTERNS):
         return True
@@ -264,11 +302,18 @@ def _staging_looks_successful(text: str, crn: str | None = None) -> bool:
         word in lowered for word in ("course", "class", "schedule", "section")
     ):
         return True
-    # A schedule row for this CRN with a staged/scheduled marker is also clear.
-    return bool(
-        crn
-        and crn in (text or "")
-        and any(word in lowered for word in ("pending", "staged", "added", "scheduled"))
+    return any(word in lowered for word in ("pending", "staged", "added", "scheduled"))
+
+
+def _browser_failure(exc: Exception, context: str) -> SnipeResult:
+    if isinstance(exc, (SessionExpiredError, AuthError)):
+        return SnipeResult(
+            status="session_dead",
+            reason=f"{context}: session expired ({type(exc).__name__})",
+        )
+    return SnipeResult(
+        status="run_failed",
+        reason=f"{context}: {type(exc).__name__}: {exc}",
     )
 
 
@@ -300,6 +345,10 @@ def probe_page(page, ssb_base: str) -> dict:
 def _term_option_selectors(text: str) -> tuple[str, ...]:
     safe = text.replace("'", "\\'")
     return (
+        # select2 v3 first: .select2-results / .select2-result-label
+        f".select2-results li:has-text('{safe}')",
+        f".select2-result-label:has-text('{safe}')",
+        # select2 v4 fallbacks
         f"li.select2-results__option:has-text('{safe}')",
         f"li:has-text('{safe}')",
         f"[role='option']:has-text('{safe}')",
@@ -307,7 +356,7 @@ def _term_option_selectors(text: str) -> tuple[str, ...]:
     )
 
 
-def select_term(
+def _select_term_impl(
     page,
     ssb_base: str,
     term: str,
@@ -338,6 +387,10 @@ def select_term(
     combo = _first_visible_selector(page, TERM_COMBO_SELECTORS)
     if combo:
         page.click(combo)
+        page.wait_for_timeout(500)
+    typing = _first_visible_selector(page, TERM_INPUT_SELECTORS)
+    if typing:
+        page.fill(typing, label or term)
         page.wait_for_timeout(500)
 
     option: str | None = None
@@ -403,6 +456,31 @@ def select_term(
         sleep(1.0)
 
 
+def select_term(
+    page,
+    ssb_base: str,
+    term: str,
+    label: str = "",
+    *,
+    timeout_seconds: float = 20.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> SnipeResult | None:
+    """Select the term, mapping T0 UI/auth exceptions to a SnipeResult."""
+    try:
+        return _select_term_impl(
+            page,
+            ssb_base,
+            term,
+            label,
+            timeout_seconds=timeout_seconds,
+            sleep=sleep,
+            clock=clock,
+        )
+    except Exception as exc:  # noqa: BLE001 - T0 must never traceback
+        return _browser_failure(exc, "term selection")
+
+
 def execute_targets(
     page,
     targets: list[Target],
@@ -446,10 +524,13 @@ def execute_targets(
     """
     started = clock()
     attempted: list[str] = []
-    page.goto(f"{ssb_base}/classRegistration/classRegistration", wait_until="domcontentloaded")
-    page.wait_for_timeout(2000)
-    input_selector = _first_selector(page, CRN_INPUT_SELECTORS)
-    add_selector = _first_selector(page, ADD_BUTTON_SELECTORS)
+    try:
+        page.goto(f"{ssb_base}/classRegistration/classRegistration", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        input_selector = _first_selector(page, CRN_INPUT_SELECTORS)
+        add_selector = _first_selector(page, ADD_BUTTON_SELECTORS)
+    except Exception as exc:  # noqa: BLE001 - T0 must never traceback
+        return _browser_failure(exc, "opening the registration page")
     if not input_selector or not add_selector:
         return SnipeResult(
             status="probe_unavailable",
@@ -459,7 +540,12 @@ def execute_targets(
     if dry_run:
         for target in targets:
             attempted.append(target.crn)
-            page.fill(input_selector, target.crn)
+            try:
+                page.fill(input_selector, target.crn)
+            except Exception as exc:  # noqa: BLE001 - a rehearsal must still report cleanly
+                result = _browser_failure(exc, f"filling CRN {target.crn}")
+                result.attempted = attempted
+                return result
         return SnipeResult(
             status="dry_run",
             reason=(
@@ -477,10 +563,20 @@ def execute_targets(
                 return SnipeResult(status="timeout", reason="hard timeout reached", attempted=attempted)
             attempts += 1
             attempted.append(target.crn)
-            page.fill(input_selector, target.crn)
-            page.click(add_selector)
-            page.wait_for_timeout(2500)
-            body = page.inner_text("body")
+            try:
+                before_body = page.inner_text("body")
+                page.fill(input_selector, target.crn)
+                page.click(add_selector)
+                page.wait_for_timeout(2500)
+                after_body = page.inner_text("body")
+            except Exception as exc:  # noqa: BLE001 - T0 must never traceback
+                result = _browser_failure(exc, f"staging CRN {target.crn}")
+                result.attempted = attempted
+                return result
+
+            # Only text newly added by this Add can prove this CRN staged. The
+            # page keeps earlier notifications, so the full body is cumulative.
+            delta = _body_delta(before_body, after_body)
 
             popup = _first_visible_selector(page, AUTHORIZATION_SELECTORS)
             if popup:
@@ -493,7 +589,7 @@ def execute_targets(
                     attempted=attempted,
                 )
 
-            outcome = classify_outcome(body)
+            outcome = classify_outcome(delta)
             if outcome in {"already_registered", "closed", "prereq", "conflict", "hold", "session_dead"}:
                 return SnipeResult(
                     status=outcome,
@@ -514,27 +610,31 @@ def execute_targets(
                         reason="waitlist offered but no waitlist control resolved",
                         attempted=attempted,
                     )
-                page.click(wait_selector)
-                page.wait_for_timeout(2000)
+                try:
+                    page.click(wait_selector)
+                    page.wait_for_timeout(2000)
+                except Exception as exc:  # noqa: BLE001
+                    result = _browser_failure(exc, f"joining waitlist for {target.crn}")
+                    result.attempted = attempted
+                    return result
                 return SnipeResult(
                     status="waitlist_joined",
                     reason=f"joined waitlist for {target.crn}",
                     attempted=attempted,
                 )
 
-            if outcome == "registered" or _staging_looks_successful(body, target.crn):
-                # "registered" on the stage page is still only a staged row.
+            if _staging_looks_successful(delta, target.crn):
                 staged.append(target.crn)
                 break
 
-            if _staging_is_ambiguous(body) and attempts < max_attempts:
+            if _staging_is_ambiguous(delta) and attempts < max_attempts:
                 sleep(1.0)
                 continue
             return SnipeResult(
                 status="stage_unknown",
                 reason=(
-                    f"CRN {target.crn}: Add did not show a clear staging success or a "
-                    "known failure; no Save was clicked"
+                    f"CRN {target.crn}: Add did not add this CRN to the new page text; "
+                    "no Save was clicked"
                 ),
                 attempted=attempted,
             )
@@ -563,8 +663,13 @@ def execute_targets(
             ),
             attempted=attempted,
         )
-    page.wait_for_timeout(2500)
-    body = page.inner_text("body")
+    try:
+        page.wait_for_timeout(2500)
+        body = page.inner_text("body")
+    except Exception as exc:  # noqa: BLE001 - a Save outcome must still report cleanly
+        result = _browser_failure(exc, "reading the post-Save page")
+        result.attempted = attempted
+        return result
     popup = _first_visible_selector(page, AUTHORIZATION_SELECTORS)
     if popup:
         return SnipeResult(
@@ -598,22 +703,64 @@ def execute_targets(
     )
 
 
-def capture_traffic(page, path: Path) -> Path:
+def should_capture(url: str, resource_type: str = "", content_type: str = "") -> bool:
+    """Only registration XHR/JSON is worth capturing; never assets."""
+    if "unw.edu" not in (url or ""):
+        return False
+    if "/StudentRegistrationSsb/ssb/" in url:
+        return True
+    return resource_type in {"xhr", "fetch"} and "json" in (content_type or "").lower()
+
+
+class CaptureHandle:
+    """Owns the response listener and the JSONL file for one browser run."""
+
+    def __init__(self, page, handle) -> None:
+        self.page = page
+        self.handle = handle
+        self.handler = None
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            if self.handler is not None:
+                self.page.remove_listener("response", self.handler)
+        with contextlib.suppress(Exception):
+            self.handle.close()
+
+
+def capture_traffic(page, path: Path) -> CaptureHandle:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a", encoding="utf-8")
+    capture = CaptureHandle(page, handle)
 
     def on_response(response):
-        if "unw.edu" not in response.url:
-            return
         try:
+            content_type = response.headers.get("content-type", "")
+            if not should_capture(
+                response.url,
+                response.request.resource_type,
+                content_type,
+            ):
+                return
             body = response.text()[:4000]
-        except Exception:  # noqa: BLE001
-            body = None
-        handle.write(json.dumps({"status": response.status, "method": response.request.method, "url": response.url, "body": body}) + "\n")
-        handle.flush()
+            handle.write(
+                json.dumps(
+                    {
+                        "status": response.status,
+                        "method": response.request.method,
+                        "url": response.url,
+                        "body": body,
+                    }
+                )
+                + "\n"
+            )
+            handle.flush()
+        except Exception:  # noqa: BLE001 - a capture failure must not kill the run
+            return
 
+    capture.handler = on_response
     page.on("response", on_response)
-    return path
+    return capture
 
 
 def wait_for_window(term: str, *, offset_seconds: int, interval_seconds: int, timeout_seconds: int,
@@ -647,7 +794,12 @@ def _capture_path(term: str, label: str) -> Path:
 
 def _seats_ready(term: str, targets: list[Target], ssb: object) -> list[Target]:
     ready: list[Target] = []
-    for subject, number in {(target.course.split()[0], target.course.split()[1]) for target in targets if target.course}:
+    pairs: set[tuple[str, str]] = set()
+    for target in targets:
+        parts = (target.course or "").split()
+        if len(parts) >= 2:
+            pairs.add((parts[0], parts[1]))
+    for subject, number in pairs:
         page = ssb.search(term=term, subject=subject, course_number=number, page_max_size=100)
         open_crns = {section.crn for section in page.sections if section.open and (section.seats_available or 0) > 0}
         ready.extend(target for target in targets if target.course.startswith(f"{subject} {number}") and target.crn in open_crns)
@@ -715,16 +867,25 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
 
     Live ``window`` runs resolve the personal ticket first (``term/search`` plus
     the Prepare for Registration page), pre-warm the browser at
-    ``start - prewarm_seconds``, poll eligibility near T0, select the term, then
-    run the existing two-phase Add/Save loop. A future ticket does not make the
-    term eligible; only Banner's ``studentEligValid`` does. Dry runs never wait
-    for hours and never click Add/Save.
+    ``start - prewarm_seconds``, revalidate the session after that sleep, poll
+    eligibility near T0, select the term, then run the existing two-phase
+    Add/Save loop. A future ticket does not make the term eligible; only Banner's
+    ``studentEligValid`` does. Dry runs never wait for hours and never click
+    Add/Save.
     """
     from playwright.sync_api import sync_playwright
 
     from .auth import BROWSER_UA, ensure, login, session_valid
     from .config import STATE_PATH, get_settings
     from .banner.ssb import SSBClient as _SSBClient
+
+    if not options.probe and not options.dry_run and not (
+        options.live and options.i_understand
+    ):
+        raise SafetyError(
+            "Live registration requires options.live and options.i_understand; "
+            "the CLI consent prompt is not a substitute."
+        )
 
     settings = get_settings()
     base = ssb_base or settings.ssb_base
@@ -734,29 +895,40 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
     capture = _capture_path(options.term, "probe" if options.probe else ("live" if options.live else "dry"))
 
     ssb = _SSBClient(ensure(settings))
-    current = window(options.term, ssb=ssb) if not options.probe else None
+    current: RegistrationWindow | None = None
+    if not options.probe:
+        try:
+            current = window(options.term, ssb=ssb)
+        except Exception as exc:  # noqa: BLE001 - T0 must never traceback
+            return _browser_failure(exc, "resolving the registration window")
 
     if options.mode == "seats" and not options.probe:
-        ssb.set_term(options.term, mode="search")
-        if options.dry_run:
-            ready = _seats_ready(options.term, targets, ssb)
-            print(f"Seat check: {len(ready)}/{len(targets)} target(s) currently open.", flush=True)
-        else:
-            deadline = time.monotonic() + options.timeout_seconds
-            ready = []
-            while time.monotonic() < deadline:
+        try:
+            ssb.set_term(options.term, mode="search")
+            if options.dry_run:
                 ready = _seats_ready(options.term, targets, ssb)
-                if ready:
-                    break
-                print(f"No seats yet for {', '.join(t.crn for t in targets)}; waiting {options.interval_seconds}s", flush=True)
-                time.sleep(options.interval_seconds)
+                print(f"Seat check: {len(ready)}/{len(targets)} target(s) currently open.", flush=True)
+            else:
+                deadline = time.monotonic() + options.timeout_seconds
+                ready = []
+                while time.monotonic() < deadline:
+                    ready = _seats_ready(options.term, targets, ssb)
+                    if ready:
+                        break
+                    print(f"No seats yet for {', '.join(t.crn for t in targets)}; waiting {options.interval_seconds}s", flush=True)
+                    time.sleep(options.interval_seconds)
+        except Exception as exc:  # noqa: BLE001 - T0 must never traceback
+            return _browser_failure(exc, "checking seats")
         targets = ready or []
         if not targets and not options.dry_run:
             return SnipeResult(
                 status="no_seats",
                 reason="no target section has an open seat yet",
             )
-        current = window(options.term, ssb=ssb)
+        try:
+            current = window(options.term, ssb=ssb)
+        except Exception as exc:  # noqa: BLE001
+            return _browser_failure(exc, "resolving the registration window")
 
     if current is not None:
         if options.dry_run:
@@ -786,6 +958,15 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
                     flush=True,
                 )
                 time.sleep(wait)
+            # The pre-T0 sleep can outlive the cached login. Revalidate and rebuild
+            # both the client and the browser storage path before opening the UI.
+            try:
+                if not session_valid(settings):
+                    login(force=True, settings=settings)
+                ssb = _SSBClient(ensure(settings))
+                state_path = STATE_PATH
+            except Exception as exc:  # noqa: BLE001
+                return _browser_failure(exc, "refreshing the session after the wait")
 
     result: SnipeResult
     with sync_playwright() as pw:
@@ -798,7 +979,7 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
             timezone_id="America/Chicago",
         )
         page = context.new_page()
-        capture_traffic(page, capture)
+        capture_handle = capture_traffic(page, capture)
         try:
             if options.probe:
                 info = probe_page(page, base)
@@ -808,17 +989,31 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
                     capture_path=str(capture),
                 )
             else:
+                assert current is not None
                 if not current.eligible:
                     # Pre-warm the term picker while Banner catches up to T0.
-                    page.goto(f"{base}/term/termSelection?mode=registration", wait_until="domcontentloaded")
-                    page.wait_for_timeout(1500)
+                    try:
+                        page.goto(
+                            f"{base}/term/termSelection?mode=registration",
+                            wait_until="domcontentloaded",
+                        )
+                        page.wait_for_timeout(1500)
+                    except Exception as exc:  # noqa: BLE001
+                        result = _browser_failure(exc, "opening the term picker")
+                        result.capture_path = str(capture)
+                        return result
                     deadline = time.monotonic() + options.timeout_seconds
-                    current = _poll_until_eligible(
-                        options.term,
-                        ssb=ssb,
-                        deadline=deadline,
-                        poll_seconds=max(1, options.poll_seconds),
-                    )
+                    try:
+                        current = _poll_until_eligible(
+                            options.term,
+                            ssb=ssb,
+                            deadline=deadline,
+                            poll_seconds=max(1, options.poll_seconds),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        result = _browser_failure(exc, "polling registration eligibility")
+                        result.capture_path = str(capture)
+                        return result
                     if not current.eligible:
                         result = SnipeResult(
                             status="not_eligible",
@@ -849,18 +1044,22 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
                     )
                     time.sleep(max(1, options.poll_seconds))
 
-                result = execute_targets(
-                    page,
-                    targets,
-                    ssb_base=base,
-                    term=options.term,
-                    dry_run=options.dry_run,
-                    allow_waitlist=options.allow_waitlist,
-                    max_attempts=options.max_attempts,
-                    timeout_seconds=options.timeout_seconds,
-                )
+                try:
+                    result = execute_targets(
+                        page,
+                        targets,
+                        ssb_base=base,
+                        term=options.term,
+                        dry_run=options.dry_run,
+                        allow_waitlist=options.allow_waitlist,
+                        max_attempts=options.max_attempts,
+                        timeout_seconds=options.timeout_seconds,
+                    )
+                except Exception as exc:  # noqa: BLE001 - defense in depth at T0
+                    result = _browser_failure(exc, "executing the registration targets")
                 result.capture_path = str(capture)
         finally:
+            capture_handle.close()
             context.close()
             browser.close()
     return result

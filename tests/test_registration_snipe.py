@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -21,14 +21,17 @@ from eagle_flightplan.snipe import (
     SafetyError,
     SnipeOptions,
     Target,
+    _seats_ready,
     authorize_live,
     check_registration_eligible,
     classify_outcome,
     execute_targets,
+    exit_code_for,
     probe_page,
     resolve_targets,
     run_browser,
     select_term,
+    should_capture,
 )
 
 
@@ -78,6 +81,9 @@ def test_classify_outcome_phrases():
     assert classify_outcome("Time conflict with CYS 2081") == "conflict"
     assert classify_outcome("You have a hold") == "hold"
     assert classify_outcome("Please sign in again") == "session_dead"
+    assert classify_outcome("You have holds which do not prevent registration") == "unknown"
+    assert classify_outcome("full") == "unknown"
+    assert classify_outcome("Section is full") == "closed"
     assert classify_outcome("something else") == "unknown"
 
 
@@ -189,7 +195,7 @@ def test_dry_run_fills_every_target_without_clicking():
 def test_live_stages_then_saves_once_and_reports_registered():
     page = FakePage(UI | {SAVE}, bodies=[
         "",
-        "Course added to schedule",
+        "Course added 22449 to schedule",
         "Registration Successful",
     ])
     result = execute_targets(
@@ -203,7 +209,7 @@ def test_live_stages_then_saves_once_and_reports_registered():
 
 
 def test_missing_save_is_staged_not_committed():
-    page = FakePage(UI, bodies=["", "Course added to schedule"])
+    page = FakePage(UI, bodies=["", "Course added 22449 to schedule"])
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
         ssb_base="https://x/ssb", term="202620", dry_run=False, allow_waitlist=False,
@@ -215,7 +221,7 @@ def test_missing_save_is_staged_not_committed():
 
 
 def test_save_unknown_when_final_page_is_unclear():
-    page = FakePage(UI | {SAVE}, bodies=["", "Course added", "Nothing helpful"])
+    page = FakePage(UI | {SAVE}, bodies=["", "Course added 22449", "Nothing helpful"])
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
         ssb_base="https://x/ssb", term="202620", dry_run=False, allow_waitlist=False,
@@ -274,7 +280,7 @@ def test_authorization_popup_is_detected_and_not_accepted():
 
 
 def test_waitlist_not_joined_without_flag():
-    page = FakePage(UI, body="Waitlist is available")
+    page = FakePage(UI, bodies=["", "Waitlist is available"])
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
         ssb_base="https://x/ssb", term="202620", dry_run=False, allow_waitlist=False,
@@ -441,3 +447,232 @@ def test_prebrowser_dry_run_does_not_claim_capture(monkeypatch, tmp_path):
     assert result.status == "dry_run"
     assert result.capture_path is None
     assert not capture.exists()
+
+
+def test_staging_requires_new_text_for_the_just_submitted_crn():
+    page = FakePage(UI | {SAVE}, bodies=[
+        "",
+        "Course added 11111 to schedule",
+        "Course added 11111 to schedule",
+    ])
+    result = execute_targets(
+        page,
+        [Target(crn="11111", course="CYS 1000"), Target(crn="22222", course="CYS 2000")],
+        ssb_base="https://x/ssb",
+        term="202620",
+        dry_run=False,
+        allow_waitlist=False,
+        max_attempts=2,
+        timeout_seconds=60,
+        sleep=lambda _: None,
+    )
+    assert result.status == "stage_unknown"
+    assert "22222" in result.reason
+    assert page.clicks.count(ADD) == 3  # one success + two retries for the stale CRN
+    assert SAVE not in page.clicks
+
+
+def test_outcome_taxonomy_exit_codes():
+    for status in (
+        "registered",
+        "already_registered",
+        "waitlist_joined",
+        "dry_run",
+        "probe_ok",
+    ):
+        assert exit_code_for(status) == 0, status
+    for status in (
+        "probe_unavailable",
+        "term_option_not_found",
+        "term_selection_failed",
+        "registration_ui_unavailable",
+        "no_seats",
+        "alternate_pin_required",
+        "run_failed",
+        "not_eligible",
+        "session_dead",
+        "save_unknown",
+        "waitlist",
+    ):
+        assert exit_code_for(status) == 1, status
+
+
+def test_capture_filter_skips_assets_and_external_hosts():
+    assert should_capture(
+        "https://registration-ss.oci.unw.edu/StudentRegistrationSsb/ssb/term/search",
+        resource_type="xhr",
+        content_type="application/json",
+    )
+    assert should_capture(
+        "https://my.unw.edu/api/v1/users/me/",
+        resource_type="xhr",
+        content_type="application/json",
+    )
+    assert not should_capture(
+        "https://registration-ss.oci.unw.edu/StudentRegistrationSsb/assets/app.js",
+        resource_type="script",
+        content_type="application/javascript",
+    )
+    assert not should_capture(
+        "https://example.com/api/thing",
+        resource_type="xhr",
+        content_type="application/json",
+    )
+
+
+class RaisingFillPage(FakePage):
+    def fill(self, selector, value):
+        raise RuntimeError("fill exploded")
+
+
+def test_stage_io_failure_returns_run_failed_without_save():
+    page = RaisingFillPage(UI | {SAVE}, bodies=[""])
+    result = execute_targets(
+        page,
+        [Target(crn="22449", course="CYS 4855")],
+        ssb_base="https://x/ssb",
+        term="202620",
+        dry_run=True,
+        allow_waitlist=False,
+        max_attempts=1,
+        timeout_seconds=30,
+    )
+    assert result.status == "run_failed"
+    assert "fill exploded" in result.reason
+    assert SAVE not in page.clicks
+
+
+def test_seats_ready_ignores_single_token_course_codes():
+    class FakeSSB:
+        def search(self, **kwargs):
+            raise AssertionError("single-token course must be skipped")
+
+    assert _seats_ready("202620", [Target(crn="1", course="CYS")], FakeSSB()) == []
+
+
+def test_live_consent_is_enforced_inside_run_browser():
+    with pytest.raises(SafetyError, match=r"live and options\.i_understand"):
+        run_browser(SnipeOptions(term="202620", dry_run=False, live=False), [])
+    with pytest.raises(SafetyError, match=r"live and options\.i_understand"):
+        run_browser(
+            SnipeOptions(term="202620", dry_run=False, live=True, i_understand=False),
+            [],
+        )
+
+
+class FakeCapture:
+    def close(self):
+        pass
+
+
+class FakePageForRun:
+    def __init__(self):
+        self.listeners = []
+
+    def goto(self, url, wait_until=None):
+        pass
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def on(self, event, handler):
+        self.listeners.append(handler)
+
+    def remove_listener(self, event, handler):
+        pass
+
+
+class FakeContext:
+    def __init__(self):
+        self.page = FakePageForRun()
+
+    def new_page(self):
+        return self.page
+
+    def close(self):
+        pass
+
+
+class FakeBrowser:
+    def new_context(self, **kwargs):
+        return FakeContext()
+
+    def close(self):
+        pass
+
+
+class FakePlaywright:
+    class chromium:
+        @staticmethod
+        def launch(headless=True):
+            return FakeBrowser()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_run_browser_refreshes_session_after_prewarm(monkeypatch, tmp_path):
+    import eagle_flightplan.snipe as snipe_mod
+    from eagle_flightplan.auth import SessionExpiredError
+    from eagle_flightplan.registration import TZ, RegistrationWindow
+
+    now = datetime.now(TZ)
+    future = RegistrationWindow(
+        term="202620",
+        eligible=False,
+        start=now + timedelta(seconds=5),
+        end=now + timedelta(hours=1),
+        reason="Term not eligible for registration",
+        source="banner_prepare",
+        parse_status="parsed",
+        standing="Senior",
+    )
+    calls = {"session_valid": 0, "login": 0, "window": 0, "sleep": []}
+
+    def fake_session_valid(settings=None):
+        calls["session_valid"] += 1
+        return calls["session_valid"] == 1
+
+    def fake_login(force=False, settings=None, **kwargs):
+        calls["login"] += 1
+        return tmp_path / "state.json"
+
+    def fake_window(term, ssb=None):
+        calls["window"] += 1
+        if calls["window"] == 1:
+            return future
+        raise SessionExpiredError("cached session expired")
+
+    capture = tmp_path / "capture.jsonl"
+    monkeypatch.setattr("eagle_flightplan.auth.session_valid", fake_session_valid)
+    monkeypatch.setattr("eagle_flightplan.auth.login", fake_login)
+    monkeypatch.setattr("eagle_flightplan.auth.ensure", lambda settings=None: object())
+    monkeypatch.setattr(snipe_mod, "window", fake_window)
+    monkeypatch.setattr(snipe_mod, "_capture_path", lambda term, label: capture)
+    monkeypatch.setattr(
+        snipe_mod, "capture_traffic", lambda page, path: FakeCapture()
+    )
+    monkeypatch.setattr(snipe_mod.time, "sleep", lambda seconds: calls["sleep"].append(seconds))
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+
+    result = run_browser(
+        SnipeOptions(
+            term="202620",
+            dry_run=False,
+            live=True,
+            i_understand=True,
+            prewarm_seconds=0,
+            timeout_seconds=5,
+        ),
+        [],
+    )
+
+    assert result.status == "session_dead"
+    assert calls["login"] == 1
+    assert calls["session_valid"] >= 2
+    assert calls["window"] == 2
+    assert calls["sleep"]
+    assert result.capture_path == str(capture)

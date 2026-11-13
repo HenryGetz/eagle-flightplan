@@ -108,15 +108,21 @@ eagle-flightplan snipe --term 202620 --crn 22449 --crn 23251 --mode seats --inte
   the term has no ticket at all, the run returns `not_eligible` with Banner's exact
   text. If the ticket is future, the run waits rather than returning early.
 * **Execution is browser-driven and two-phase.** Playwright opens one context and
-  captures every `unw.edu` response to
-  `captures/registration-<term>-<live|dry|probe>-<ts>.jsonl`. `select_term` picks the
-  term (`#txt_term`/select2, `#term-go`) and verifies the CRN input. Then each
-  target is filled and Add is clicked (stage); after all targets Save is clicked
-  once (`SAVE_BUTTON_SELECTORS`). Selector candidates live in
+  captures registration `unw.edu` XHR/JSON to
+  `captures/registration-<term>-<live|dry|probe>-<ts>.jsonl` (assets are skipped).
+  `select_term` picks the term (select2 v3 `select2-choice`/`select2-results`
+  first, then v4; `#term-go`) and verifies the CRN input. Then each target is
+  filled and Add is clicked (stage); the success check uses only the **new page
+  text** and requires that CRN to appear in it, so an earlier "course added"
+  notification cannot make an unmatched CRN look staged. After all targets Save
+  is clicked once (`SAVE_BUTTON_SELECTORS`). The session is revalidated and the
+  SSB client/state rebuilt after the pre-T0 sleep. Selector candidates live in
   `src/eagle_flightplan/snipe.py`; they are provisional until a real eligible run.
 * **dry-run (default)** prints the known window, the target table and how many CRNs
-  it would stage; it does not wait for hours, fill the live UI, click Add or click
-  Save. **`--probe`** only verifies the page and selector resolution.
+  it would stage; it does not wait for hours. It fills CRNs only when the term is
+  already eligible (no Add/Save click), and it never clicks Add or Save.
+  `--dry-run` and `--live` are mutually exclusive; `--no-dry-run` requires
+  `--live`. **`--probe`** only verifies the page and selector resolution.
 * **Never claims registration from a stage.** `registered` is returned only from
   the post-Save page. A missing Save control returns `staged_not_committed`; an
   unclear Save result returns `save_unknown`; a page that clearly needs an
@@ -131,9 +137,17 @@ First match wins, then the run exits and reports: `registered`,
 `already_registered`, `closed`, `waitlist` (not joined unless `--allow-waitlist`),
 `waitlist_joined`, `prereq`, `conflict`, `hold`, `session_dead`, `not_eligible`,
 `alternate_pin_required`, `term_option_not_found`, `term_selection_failed`,
-`registration_ui_unavailable`, `staged_not_committed`, `save_unknown`,
+`registration_ui_unavailable`, `run_failed`, `staged_not_committed`, `save_unknown`,
 `stage_unknown`, `authorization_required`, `timeout`. Only a blank/loading stage is
 retried up to the per-CRN attempt cap; any other unclear stage stops immediately.
+
+## CLI exit codes
+
+Only `registered`, `already_registered`, `waitlist_joined`, `dry_run` and
+`probe_ok` exit 0. Every other status — including `probe_unavailable`,
+`term_option_not_found`, `term_selection_failed`, `registration_ui_unavailable`,
+`no_seats`, `alternate_pin_required`, `run_failed`, `not_eligible`,
+`session_dead`, `save_unknown` and `timeout` — exits 1.
 
 ## Hard safety rules
 

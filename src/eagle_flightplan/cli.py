@@ -220,7 +220,8 @@ def snipe(
     offset: int = typer.Option(0, "--offset", help="Seconds after the window opens."),
     interval: int = typer.Option(60, "--interval", help="Poll interval for seats/window waits."),
     live: bool = typer.Option(False, "--live", help="Actually submit (requires --i-understand and typed term)."),
-    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Rehearse without submitting."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Rehearse without submitting (default; mutually exclusive with --live)."),
+    no_dry_run: bool = typer.Option(False, "--no-dry-run", help="Explicitly disable rehearsal; requires --live."),
     i_understand: bool = typer.Option(False, "--i-understand", help="Required for --live."),
     allow_waitlist: bool = typer.Option(False, "--allow-waitlist", help="Join a waitlist if offered."),
     probe: bool = typer.Option(False, "--probe", help="Only verify the registration page and selectors."),
@@ -237,9 +238,20 @@ def snipe(
         SnipeError,
         SnipeOptions,
         authorize_live,
+        exit_code_for,
         resolve_targets,
         run_browser,
     )
+
+    if dry_run and live:
+        raise typer.BadParameter(
+            "--dry-run and --live are mutually exclusive; omit --dry-run for a live run."
+        )
+    if dry_run and no_dry_run:
+        raise typer.BadParameter("--dry-run and --no-dry-run are mutually exclusive.")
+    if no_dry_run and not live:
+        raise typer.BadParameter("--no-dry-run requires --live; a rehearsal never submits.")
+    effective_dry_run = not live
 
     targets = resolve_targets(term, plan_name=plan, crns=crn or [])
     options = SnipeOptions(
@@ -249,7 +261,7 @@ def snipe(
         mode=mode if mode in {"window", "seats"} else "window",
         offset_seconds=offset,
         interval_seconds=interval,
-        dry_run=not live,
+        dry_run=effective_dry_run,
         live=live,
         i_understand=i_understand,
         allow_waitlist=allow_waitlist,
@@ -289,18 +301,7 @@ def snipe(
         console.print(result.reason)
     if result.capture_path:
         console.print(f"captured: {result.capture_path}")
-    if result.status in {
-        "not_eligible",
-        "prereq",
-        "conflict",
-        "hold",
-        "session_dead",
-        "timeout",
-        "stage_unknown",
-        "staged_not_committed",
-        "save_unknown",
-        "authorization_required",
-    }:
+    if exit_code_for(result.status):
         raise typer.Exit(code=1)
 
 
