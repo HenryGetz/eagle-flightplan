@@ -223,6 +223,11 @@ def heal_session(settings: Settings | None = None) -> None:
     """Re-login once, serialized so concurrent callers cannot open two browsers."""
     global _LAST_LOGIN_AT
     cfg = settings or get_settings()
+    if not auto_login_enabled():
+        raise SessionExpiredError(
+            "Banner session expired and auto-login is disabled "
+            f"({AUTO_LOGIN_ENV}=0). Run `{MANUAL_LOGIN_COMMAND}` to sign in."
+        )
     with _LOGIN_LOCK:
         if session_valid(cfg):
             return
@@ -287,9 +292,19 @@ def request_with_refresh(
 
 
 def ensure(settings: Settings | None = None) -> httpx.Client:
-    """Return an authenticated httpx client, logging in only when needed."""
+    """Return an authenticated httpx client, logging in only when needed.
+
+    ``UNW_AUTO_LOGIN=0`` disables every implicit login: a stale session raises an
+    actionable ``SessionExpiredError`` instead of launching Chromium. The explicit
+    ``login``/``login --force`` command is not affected.
+    """
     cfg = settings or get_settings()
     if not session_valid(cfg):
+        if not auto_login_enabled():
+            raise SessionExpiredError(
+                "No valid UNW session and auto-login is disabled "
+                f"({AUTO_LOGIN_ENV}=0). Run `{MANUAL_LOGIN_COMMAND}` to sign in."
+            )
         login(settings=cfg)
     return httpx_client(cfg)
 

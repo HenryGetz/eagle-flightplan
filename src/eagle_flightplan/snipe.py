@@ -876,7 +876,14 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
     """
     from playwright.sync_api import sync_playwright
 
-    from .auth import BROWSER_UA, ensure, login, session_valid
+    from .auth import (
+        MANUAL_LOGIN_COMMAND,
+        BROWSER_UA,
+        auto_login_enabled,
+        ensure,
+        login,
+        session_valid,
+    )
     from .config import STATE_PATH, get_settings
     from .banner.ssb import SSBClient as _SSBClient
 
@@ -891,6 +898,14 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
     settings = get_settings()
     base = ssb_base or settings.ssb_base
     if not session_valid(settings):
+        if not auto_login_enabled():
+            return SnipeResult(
+                status="session_dead",
+                reason=(
+                    "No valid UNW session and auto-login is disabled "
+                    f"(UNW_AUTO_LOGIN=0). Run `{MANUAL_LOGIN_COMMAND}` to sign in."
+                ),
+            )
         login(force=True, settings=settings)
     state_path = STATE_PATH
     capture = _capture_path(options.term, "probe" if options.probe else ("live" if options.live else "dry"))
@@ -963,6 +978,15 @@ def run_browser(options: SnipeOptions, targets: list[Target], *, ssb_base: str |
             # both the client and the browser storage path before opening the UI.
             try:
                 if not session_valid(settings):
+                    if not auto_login_enabled():
+                        return SnipeResult(
+                            status="session_dead",
+                            reason=(
+                                "No valid UNW session after the pre-T0 wait and "
+                                "auto-login is disabled (UNW_AUTO_LOGIN=0). Run "
+                                f"`{MANUAL_LOGIN_COMMAND}` to sign in."
+                            ),
+                        )
                     login(force=True, settings=settings)
                 ssb = _SSBClient(ensure(settings))
                 state_path = STATE_PATH

@@ -137,10 +137,14 @@ A repeated failure raises `SessionExpiredError` with the manual command
 (the packaged `eagle-flightplan login --force` command); it never loops. Non-idempotent plan writes
 are never replayed, even after a successful re-login.
 
-Controls: `UNW_AUTO_LOGIN=0` disables healing (`eagle-flightplan advise --no-auto-login`
-also sets it), and a login failure surfaces the original error plus the manual
-command. Concurrent tool calls cannot start two browsers because the re-login
-holds a lock and re-checks validity inside it.
+Controls: `UNW_AUTO_LOGIN=0` disables every implicit recovery path: `ensure()`
+(used by the audit/Banner/plan clients and MCP tools), request healing via
+`request_with_refresh`, and the snipe preflight. A stale session then raises
+`SessionExpiredError` with the manual command instead of launching Chromium.
+Only the explicit `login`/`login --force` command ignores the flag. A login failure
+surfaces the original error plus the manual command. Concurrent tool calls cannot
+start two browsers because the re-login holds a lock and re-checks validity
+inside it.
 
 Measured cost (headless Chromium, cold state, 2026-11-11): **~20.5 s** for a full
 password + TOTP + KMSI(NO) login, including the audit-host SSO check. Warm

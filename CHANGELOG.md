@@ -170,6 +170,12 @@ All notable changes to this project are documented here. The format follows
   single-token course codes.
 - `pytest` now uses `pythonpath = ["src"]`, so bare `pytest -q` works from a clean
   checkout.
+- `auth.ensure()` (and `heal_session`) now honor `UNW_AUTO_LOGIN=0`: a stale
+  session raises `SessionExpiredError` with the explicit `login --force` command
+  instead of launching Chromium. The audit/Banner/plan/MCP callers that rely on
+  `ensure()` inherit the gate; explicit `login --force` still works. Snipe's live
+  preflight and post-sleep refresh also return `session_dead` rather than logging
+  in when the flag is disabled.
 
 ### Changed
 
