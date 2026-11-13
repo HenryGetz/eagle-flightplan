@@ -1,4 +1,4 @@
-&lt;div align=&quot;center&quot;&gt;
+<div align="center">
 
 # 🎓 Eagle Flightplan
 
@@ -10,7 +10,7 @@
 
 *Ask your AI assistant what classes you still need, find open sections that fit your life, avoid time conflicts, and map out every semester to graduation.*
 
-&lt;/div&gt;
+</div>
 
 > [!NOTE]
 > **Independent Project:** `unw-planner` is built for UNW students and is not affiliated with, endorsed by, or supported by the University of Northwestern – St. Paul, Ellucian, or Rate My Professors.
@@ -97,9 +97,9 @@ Restart your AI app, and you're ready to plan.
 
 ---
 
-&lt;details&gt;
-&lt;summary&gt;🛠️ Using the CLI or developing locally?&lt;/summary&gt;
+<details>
+<summary>🛠️ Using the CLI or developing locally?</summary>
 
 Everything `unw-planner` exposes to your AI is also available from the terminal via `unwplanner --help`. Check the project's `docs/` folder for standalone CLI commands, logging details, and contributor setup.
 
-&lt;/details&gt;
+</details>
