@@ -100,7 +100,12 @@ All notable changes to this project are documented here. The format follows
 - `unw_semester_plan` (one call, read-only): draft + conflicts + personal
   registration window + Banner Plan Ahead summaries in a compact report with
   selections, grid, pins/unplaced/warnings, `next_action` and per-source error
-  fields. The MCP surface is now 21 tools.
+  fields. The MCP surface is now 21 tools. It accepts `credits` as an alias for
+  `max_credits` and `pins`/`courses` as aliases that append to
+  `required_courses`; the response echoes `aliases`, applied `max_credits`,
+  `min_credits`, `hours` and `requested`. Pinned rows carry `hours_applied`, and
+  `tba_crns`/`tba_sections` plus `prereq_unverified_crns` make TBA and
+  prerequisite unknowns explicit in `next_action` and warnings.
 - `unw_search(include_ratings=true)` adds a compact RMP map for the unique
   instructors on the returned page.
 - `unw_remaining` reports `known_credits_remaining`,

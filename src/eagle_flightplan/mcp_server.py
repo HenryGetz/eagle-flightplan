@@ -18,6 +18,7 @@ Design rules:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1359,38 +1360,95 @@ def _semester_selection(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _merge_required_courses(
+    required_courses: Sequence[str] | str | None,
+    pins: Sequence[str] | str | None,
+    courses: Sequence[str] | str | None,
+) -> list[str] | None:
+    merged: list[str] = []
+    for value in (required_courses, pins, courses):
+        for item in _norm_list(value):
+            if item not in merged:
+                merged.append(item)
+    return merged or None
+
+
 def _semester_next_action(
     plan: dict[str, Any],
     registration: dict[str, Any],
     conflict_count: int,
     warnings: Sequence[str],
     plans: dict[str, Any],
+    *,
+    term: str,
+    crns: Sequence[str],
+    tba_crns: Sequence[str],
+    prereq_unverified_crns: Sequence[str],
 ) -> str:
-    actions: list[str] = []
-    if registration.get("start") and not registration.get("eligible"):
-        actions.append(
-            f"ticket opens {registration['start']}"
-            f" ({registration.get('countdown', 'unknown')})"
-        )
-    if conflict_count:
-        actions.append(f"resolve {conflict_count} time conflict(s)")
+    crn_arg = "[" + ", ".join(json.dumps(str(crn)) for crn in crns) + "]"
+    plan_bits = []
+    for item in plans.get("plans") or []:
+        bits = []
+        if item.get("id") is not None:
+            bits.append(str(item["id"]))
+        if item.get("name"):
+            bits.append(repr(item["name"]))
+        if item.get("credits") is not None:
+            bits.append(f"{item['credits']:g} cr")
+        if bits:
+            plan_bits.append(" ".join(bits))
+    plan_note = (
+        " Existing Banner plans: " + "; ".join(plan_bits) + "."
+        if plan_bits
+        else ""
+    )
+
     if plan.get("pin_errors"):
-        actions.append("fix the pinned-course error(s)")
+        primary = "Fix the pinned-course error(s) first: " + "; ".join(
+            str(item) for item in (plan.get("pin_errors") or [])[:2]
+        )
+    elif registration.get("start") and not registration.get("eligible"):
+        primary = (
+            f"Ticket assigned; opens {registration['start']}. "
+            f"Run unw_register_preview(term={term}, crns={crn_arg}) now, "
+            "then submit after opening."
+        )
+    elif registration.get("eligible"):
+        primary = (
+            f"Run unw_register_preview(term={term}, crns={crn_arg}), "
+            "then plan writes with confirm=true or snipe."
+        )
+    else:
+        primary = (
+            "Confirm the registration ticket first, then run "
+            f"unw_register_preview(term={term}, crns={crn_arg})."
+        )
+
+    extras: list[str] = []
+    if conflict_count:
+        extras.append(f"Resolve {conflict_count} time conflict(s).")
+    if tba_crns:
+        extras.append(
+            f"TBA/async CRNs {', '.join(tba_crns)} cannot be time-conflict "
+            "checked; verify their times."
+        )
+    if prereq_unverified_crns:
+        extras.append(
+            f"Prerequisite unverified for CRNs {', '.join(prereq_unverified_crns)}; "
+            "confirm before registering."
+        )
     if plan.get("min_credits") and not plan.get("min_credits_met"):
-        actions.append(
-            f"plan is {plan.get('total_credits')} cr; below the "
-            f"{plan.get('min_credits')} cr minimum"
+        extras.append(
+            f"Plan is {plan.get('total_credits')} cr; below the "
+            f"{plan.get('min_credits')} cr minimum."
         )
     variable = next(
         (warning for warning in warnings if "variable credit" in warning.lower()),
         None,
     )
     if variable:
-        actions.append(variable)
-    plan_count = plans.get("count")
-    if isinstance(plan_count, int) and plan_count:
-        actions.append(f"{plan_count} Banner Plan Ahead worksheet(s) available")
-    return "; ".join(actions) or "review the plan and register when the ticket opens"
+        extras.append(variable)
+    return primary + plan_note + ((" " + " ".join(extras)) if extras else "")
 
 
 def semester_plan_payload(
@@ -1410,33 +1468,47 @@ def semester_plan_payload(
     avoid_instructors: Sequence[str] | str | None = None,
     exclude_arrangement: bool = False,
     hours: dict[str, float] | None = None,
+    credits: float | None = None,
+    pins: Sequence[str] | str | None = None,
+    courses: Sequence[str] | str | None = None,
     include_banner_plans: bool = True,
 ) -> dict:
     """One-call semester report: draft + conflicts + ticket + Banner plans.
 
-    The draft is never hidden by a window/plan failure; those errors are returned
-    in their own fields. This is read-only.
+    Canonical constraints are ``max_credits`` and ``required_courses``.
+    ``credits`` is an alias for ``max_credits``; ``pins`` and ``courses`` append
+    to ``required_courses``. The draft is never hidden by a window/plan failure;
+    those errors are returned in their own fields. This is read-only.
     """
+    if credits is not None:
+        max_credits = credits
+    merged_courses = _merge_required_courses(required_courses, pins, courses)
     draft = draft_payload(
-        term,
-        max_credits,
-        profile,
-        avoid_days,
-        earliest,
-        latest,
-        include_summer,
-        refresh,
-        min_credits,
-        required_crns,
-        required_courses,
-        exclude_crns,
-        exclude_courses,
-        avoid_instructors,
-        exclude_arrangement,
-        hours,
+        term=term,
+        max_credits=max_credits,
+        profile=profile,
+        avoid_days=avoid_days,
+        earliest=earliest,
+        latest=latest,
+        include_summer=include_summer,
+        refresh=refresh,
+        min_credits=min_credits,
+        required_crns=required_crns,
+        required_courses=merged_courses,
+        exclude_crns=exclude_crns,
+        exclude_courses=exclude_courses,
+        avoid_instructors=avoid_instructors,
+        exclude_arrangement=exclude_arrangement,
+        hours=hours,
     )
+    requested = draft.get("requested") or {}
+    hours_map = {
+        str(crn): float(value)
+        for crn, value in (requested.get("hours") or hours or {}).items()
+    }
     body = draft.get("draft") or {}
     selections = body.get("selections") or []
+    selection_rows = [_semester_selection(row) for row in selections]
     crns = [str(row.get("crn")) for row in selections if row.get("crn")]
 
     conflict_data: dict[str, Any]
@@ -1473,6 +1545,56 @@ def semester_plan_payload(
             }
     else:
         conflict_data = {"count": 0, "summary": "no selections", "items": []}
+
+    warnings = list(body.get("warnings") or [])
+    tba_crns = [str(crn) for crn in (conflict_data.get("unscheduled_crns") or [])]
+    if not tba_crns:
+        tba_crns = [
+            str(row.get("crn"))
+            for row in selections
+            if str(row.get("times") or "").upper() == "TBA"
+        ]
+    tba_set = set(tba_crns)
+    tba_sections = [
+        {
+            "crn": row.get("crn"),
+            "course": row.get("course"),
+            "title": row.get("title"),
+        }
+        for row in selection_rows
+        if str(row.get("crn")) in tba_set
+    ]
+    if tba_crns:
+        tba_warning = (
+            f"TBA/async sections cannot be time-conflict checked "
+            f"({', '.join(tba_crns)}); verify their times."
+        )
+        if tba_warning not in warnings:
+            warnings.append(tba_warning)
+
+    # A pinned-section warning can say "prerequisite could not be verified" while
+    # the compact row still says false. Treat the warning as authoritative so the
+    # agent never sees an unexplained contradiction.
+    for warning in warnings:
+        if "prerequisite could not be verified" not in warning.lower():
+            continue
+        for row in selection_rows:
+            crn = str(row.get("crn") or "")
+            if crn and crn in warning:
+                row["prereq_unverified"] = True
+
+    prereq_rows = [row for row in selection_rows if row.get("prereq_unverified")]
+    prereq_unverified_crns = [str(row.get("crn")) for row in prereq_rows if row.get("crn")]
+    for row in prereq_rows:
+        message = (
+            f"{row.get('course')} CRN {row.get('crn')}: prerequisite could not be "
+            "verified; confirm before registering"
+        )
+        if not any(
+            str(row.get("crn")) in item and "prerequisite" in item.lower()
+            for item in warnings
+        ):
+            warnings.append(message)
 
     try:
         raw_window = registration_window_payload(term)
@@ -1526,16 +1648,26 @@ def semester_plan_payload(
     else:
         plans = {"skipped": True, "count": None}
 
+    pinned = []
+    for pin in body.get("pinned", []):
+        item = dict(pin)
+        pin_crn = str(item.get("crn") or "")
+        item["hours_applied"] = hours_map.get(pin_crn) if pin_crn else None
+        pinned.append(item)
+
     plan_summary = {
         "total_credits": body.get("total_credits"),
+        "max_credits": requested.get("max_credits", max_credits),
         "min_credits": body.get("min_credits"),
         "min_credits_met": body.get("min_credits_met"),
+        "hours": hours_map,
         "selection_count": body.get("selection_count"),
         "verified": body.get("verified"),
         "verify_problems": body.get("verify_problems", []),
         "avg_rmp_rating": body.get("avg_rmp_rating"),
         "rated_picks": body.get("rated_picks"),
         "unrated_picks": body.get("unrated_picks"),
+        "requested": requested,
         "catalog": draft.get("catalog"),
     }
     result: dict[str, Any] = {
@@ -1547,14 +1679,26 @@ def semester_plan_payload(
         ),
         "student": draft.get("student"),
         "current_term": draft.get("current_term"),
+        "aliases": {
+            "credits": credits,
+            "pins": _norm_list(pins),
+            "courses": _norm_list(courses),
+        },
+        "hours": hours_map,
         "plan": plan_summary,
-        "selections": [_semester_selection(row) for row in selections],
+        "selections": selection_rows,
+        "tba_crns": tba_crns,
+        "tba_sections": tba_sections,
+        "prereq_unverified_crns": prereq_unverified_crns,
+        "prereq_unverified_sections": [
+            {"crn": row.get("crn"), "course": row.get("course")} for row in prereq_rows
+        ],
         "grid": body.get("grid", ""),
         "grid_legend": body.get("grid_legend", {}),
-        "pinned": body.get("pinned", []),
+        "pinned": pinned,
         "pin_errors": body.get("pin_errors", []),
         "unplaced": body.get("unplaced", []),
-        "warnings": body.get("warnings", []),
+        "warnings": warnings,
         "conflicts": conflict_data,
         "registration": registration,
         "banner_plans": plans,
@@ -1579,13 +1723,18 @@ def semester_plan_payload(
         },
         registration,
         int(conflict_data.get("count") or 0),
-        result["warnings"],
+        warnings,
         plans,
+        term=term,
+        crns=crns,
+        tba_crns=tba_crns,
+        prereq_unverified_crns=prereq_unverified_crns,
     )
     result["note"] = (
-        "Read-only one-semester report. It never registers/adds/drops. The draft "
-        "survives a ticket or Banner-plan failure; inspect registration.error/"
-        "banner_plans.error when present."
+        "Read-only one-semester report. It never registers/adds/drops. Canonical "
+        "constraints are max_credits and required_courses; credits/pins/courses "
+        "are aliases. The draft survives a ticket or Banner-plan failure; inspect "
+        "registration.error/banner_plans.error when present."
     )
     return result
 
@@ -2810,35 +2959,44 @@ def unw_semester_plan(
     avoid_instructors: Sequence[str] | str | None = None,
     exclude_arrangement: bool = False,
     hours: dict[str, float] | None = None,
+    credits: float | None = None,
+    pins: Sequence[str] | str | None = None,
+    courses: Sequence[str] | str | None = None,
     include_banner_plans: bool = True,
 ) -> dict:
-    """ONE-CALL semester report (read-only): drafts the plan, checks conflicts,
-    resolves the personal registration window and lists Banner Plan Ahead
-    worksheets. Accepts the same constraints as unw_plan_draft. Returns a compact
-    plan (totals, verified, selections with ratings/credits/covers/rationale,
-    grid, pins, unplaced, warnings), a conflict summary, the registration window
-    and Banner plan summaries, plus ``next_action``. A window or Banner-plan
-    failure is reported in its own field without hiding the draft. It never
-    registers/adds/drops."""
+    """ONE-CALL semester report (read-only): draft + conflicts + personal
+    registration window + Banner Plan Ahead summaries. Canonical constraints are
+    ``max_credits`` and ``required_courses``. ``credits`` is an alias for
+    ``max_credits``; ``pins`` and ``courses`` append to ``required_courses``.
+    Returns a compact plan (totals, applied max/min/hours, verified, selections
+    with ratings/credits/covers/rationale/prereq_unverified), ``tba_crns`` /
+    ``tba_sections``, ``prereq_unverified_crns``, grid, pinned/pin_errors/unplaced/
+    warnings, a conflict summary, the registration window and Banner plan
+    summaries, plus an executable ``next_action`` naming the CRNs. A window or
+    Banner-plan failure is reported in its own field without hiding the draft.
+    It never registers/adds/drops."""
     return _safe(
         semester_plan_payload,
-        term,
-        max_credits,
-        profile,
-        avoid_days,
-        earliest,
-        latest,
-        include_summer,
-        refresh,
-        min_credits,
-        required_crns,
-        required_courses,
-        exclude_crns,
-        exclude_courses,
-        avoid_instructors,
-        exclude_arrangement,
-        hours,
-        include_banner_plans,
+        term=term,
+        max_credits=max_credits,
+        profile=profile,
+        avoid_days=avoid_days,
+        earliest=earliest,
+        latest=latest,
+        include_summer=include_summer,
+        refresh=refresh,
+        min_credits=min_credits,
+        required_crns=required_crns,
+        required_courses=required_courses,
+        exclude_crns=exclude_crns,
+        exclude_courses=exclude_courses,
+        avoid_instructors=avoid_instructors,
+        exclude_arrangement=exclude_arrangement,
+        hours=hours,
+        credits=credits,
+        pins=pins,
+        courses=courses,
+        include_banner_plans=include_banner_plans,
     )
 
 

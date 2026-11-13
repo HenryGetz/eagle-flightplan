@@ -911,6 +911,10 @@ async def test_new_draft_and_rating_arguments_are_in_the_schema() -> None:
     ):
         assert key in properties, key
     assert properties["hours"]["anyOf"][0]["type"] == "object"
+    semester_props = tools["unw_semester_plan"].input_schema["properties"]
+    for key in ("max_credits", "required_courses", "credits", "pins", "courses"):
+        assert key in semester_props, key
+    assert "alias" in tools["unw_semester_plan"].description.lower()
     assert "refresh" in tools["unw_ratings"].input_schema["properties"]
     assert "READ-ONLY" in tools["unw_registration_window"].description
 
@@ -1180,8 +1184,8 @@ def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
             "num_ratings": 10,
             "weak_evidence": False,
         },
-        "days": "Mon",
-        "times": "10:00-11:00",
+        "days": "TBA",
+        "times": "TBA",
         "credits": 1.0,
         "credit_range": [1.0, 4.0],
         "seats": 5,
@@ -1198,6 +1202,11 @@ def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
             "student": "Test Student",
             "current_term": "202610",
             "catalog": {"term": "202620", "source": "cache"},
+            "requested": {
+                "max_credits": 16,
+                "min_credits": 16,
+                "hours": {"23251": 2.0},
+            },
             "draft": {
                 "label": "Spring 2027",
                 "total_credits": 15.0,
@@ -1212,12 +1221,24 @@ def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
                 "selections": [selection],
                 "grid": "grid",
                 "grid_legend": {"COS 4841": ["23251"]},
-                "pinned": [],
+                "pinned": [
+                    {
+                        "request": "COS 4841",
+                        "kind": "course",
+                        "outcome": "placed",
+                        "crn": "23251",
+                        "course": "COS 4841",
+                        "requirement_ids": ["RA1"],
+                        "reason": "",
+                    }
+                ],
                 "pin_errors": [],
                 "unplaced": [],
                 "warnings": [
                     "COS 4841 CRN 23251: variable credit 1-4; reserved 1 cr (low end). "
-                    "Set hours for CRN 23251 to reserve more."
+                    "Set hours for CRN 23251 to reserve more.",
+                    "pinned COS 4841 CRN 23251: prerequisite could not be verified; "
+                    "confirm before registering",
                 ],
             },
         }
@@ -1272,14 +1293,24 @@ def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
     assert out["ok"] is True
     assert out["label"] == "Spring 2027"
     assert out["plan"]["total_credits"] == 15.0
+    assert out["plan"]["max_credits"] == 16
+    assert out["plan"]["hours"] == {"23251": 2.0}
     assert out["plan"]["min_credits_met"] is False
     assert out["selections"][0]["crn"] == "23251"
     assert out["selections"][0]["rating"]["rating"] == 4.0
+    assert out["selections"][0]["prereq_unverified"] is True
     assert "meetings" not in out["selections"][0]
+    assert out["pinned"][0]["hours_applied"] == 2.0
+    assert out["tba_crns"] == ["23251"]
+    assert out["tba_sections"][0]["course"] == "COS 4841"
+    assert out["prereq_unverified_crns"] == ["23251"]
+    assert any("TBA/async" in warning for warning in out["warnings"])
     assert out["conflicts"]["count"] == 0
     assert out["registration"]["start"].startswith("2026-11-16T08:30")
     assert out["banner_plans"]["count"] == 1
-    assert "ticket opens" in out["next_action"]
+    assert "Ticket assigned; opens" in out["next_action"]
+    assert "unw_register_preview" in out["next_action"]
+    assert "23251" in out["next_action"]
     assert "variable credit" in out["next_action"]
 
 
@@ -1308,3 +1339,74 @@ def test_semester_plan_keeps_draft_when_window_and_plans_fail(monkeypatch) -> No
     assert "error" in out["registration"]
     assert "error" in out["banner_plans"]
     assert out["selections"] == []
+
+
+def test_semester_plan_aliases_match_canonical_arguments(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_draft(**kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "requested": {
+                "max_credits": kwargs["max_credits"],
+                "min_credits": kwargs["min_credits"],
+                "hours": kwargs.get("hours") or {},
+                "required_courses": kwargs.get("required_courses") or [],
+            },
+            "draft": {
+                "label": "Spring 2027",
+                "total_credits": 16.0,
+                "min_credits": 16.0,
+                "min_credits_met": True,
+                "selection_count": 0,
+                "selections": [],
+                "pinned": [],
+                "pin_errors": [],
+                "unplaced": [],
+                "warnings": [],
+            },
+        }
+
+    monkeypatch.setattr(mcp_server, "draft_payload", fake_draft)
+    monkeypatch.setattr(
+        mcp_server,
+        "conflicts_payload",
+        lambda *a, **k: {"conflict_count": 0, "conflicts": []},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "registration_window_payload",
+        lambda term: {"windows": []},
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "plans_payload",
+        lambda term: {"count": 0, "plan_ahead_available": True, "plans": []},
+    )
+
+    pins = ["MIN 3206", "COS 4841"]
+    courses = ["CYS 4855"]
+    canonical = mcp_server.semester_plan_payload(
+        "202620",
+        max_credits=16,
+        required_courses=pins + courses,
+        hours={"23251": 2.0},
+    )
+    alias = mcp_server.semester_plan_payload(
+        "202620",
+        credits=16,
+        pins=pins,
+        courses=courses,
+        hours={"23251": 2.0},
+    )
+
+    assert calls[0]["max_credits"] == calls[1]["max_credits"] == 16
+    assert calls[0]["required_courses"] == calls[1]["required_courses"] == pins + courses
+    assert canonical["selections"] == alias["selections"]
+    assert canonical["pinned"] == alias["pinned"]
+    assert canonical["plan"]["max_credits"] == alias["plan"]["max_credits"] == 16
+    assert canonical["aliases"]["credits"] is None
+    assert alias["aliases"]["credits"] == 16
+    assert alias["aliases"]["pins"] == pins
+    assert alias["aliases"]["courses"] == courses
