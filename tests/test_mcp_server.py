@@ -911,11 +911,19 @@ async def test_new_draft_and_rating_arguments_are_in_the_schema() -> None:
     ):
         assert key in properties, key
     assert properties["hours"]["anyOf"][0]["type"] == "object"
-    for key in ("credits", "pins", "courses"):
-        assert key in properties, key
     semester_props = tools["unw_semester_plan"].input_schema["properties"]
-    for key in ("max_credits", "required_courses", "credits", "pins", "courses"):
-        assert key in semester_props, key
+    for key in (
+        "credits",
+        "pins",
+        "courses",
+        "allow_repeat",
+        "repeat",
+        "max_credits",
+        "required_courses",
+    ):
+        assert key in properties or key in semester_props, key
+    assert "allow_repeat" in properties
+    assert "allow_repeat" in semester_props
     assert "alias" in tools["unw_semester_plan"].description.lower()
     assert "refresh" in tools["unw_ratings"].input_schema["properties"]
     assert "READ-ONLY" in tools["unw_registration_window"].description
@@ -1412,6 +1420,10 @@ def test_semester_plan_aliases_match_canonical_arguments(monkeypatch) -> None:
     assert alias["aliases"]["credits"] == 16
     assert alias["aliases"]["pins"] == pins
     assert alias["aliases"]["courses"] == courses
+
+    repeated = mcp_server.semester_plan_payload("202620", allow_repeat=True)
+    assert calls[-1]["allow_repeat"] is True
+    assert repeated["plan"]["assumptions"]["allow_repeat"] is True
 
 
 def test_conflicts_payload_uses_the_planning_credit_basis(monkeypatch) -> None:

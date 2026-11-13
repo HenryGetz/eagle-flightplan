@@ -85,6 +85,8 @@ class Constraints(BaseModel):
     excluded_courses: list[str] = Field(default_factory=list)
     #: CRN -> credit hours to reserve for variable-credit sections.
     credit_overrides: dict[str, float] = Field(default_factory=dict)
+    #: Explicitly allow pins for courses the audit already credits (repeat).
+    allow_repeat: bool = False
 
 
 class RatingInfo(BaseModel):
@@ -660,6 +662,7 @@ class Selection(BaseModel):
     verify_at_registration: bool = False
     requires_arrangement: bool = False
     partial_tba: bool = False
+    repeated: bool = False
     meets: list[str] = Field(default_factory=list)
     covers: list[str] = Field(default_factory=list)
     rationale: str = ""
@@ -694,6 +697,7 @@ class Pinned(BaseModel):
     course: str | None = None
     requirement_ids: list[str] = Field(default_factory=list)
     reason: str = ""
+    repeated: bool = False
 
     @property
     def ok(self) -> bool:
@@ -849,6 +853,8 @@ class Planner:
         course: str | None,
         requirement_ids: Sequence[str],
         reason: str,
+        *,
+        repeated: bool = False,
     ) -> None:
         plan.pinned.append(
             Pinned(
@@ -859,9 +865,10 @@ class Planner:
                 course=course,
                 requirement_ids=list(requirement_ids),
                 reason=reason,
+                repeated=repeated,
             )
         )
-        if outcome not in {"placed", "already_completed"}:
+        if outcome != "placed":
             plan.errors.append(f"pinned {kind} {request!r} was not placed ({outcome}): {reason}")
 
     def _fits(
@@ -1049,6 +1056,7 @@ class Planner:
 
         for kind, request in requests:
             prereq_unverified = False
+            repeated = False
             if kind == "crn":
                 section = snapshot.by_crn(request)
                 if section is None:
@@ -1063,10 +1071,12 @@ class Planner:
                         "the CRN or its course is in the exclusion list",
                     )
                     continue
-                if self._already_completed(section.code, passed):
+                repeated = self._already_completed(section.code, passed)
+                if repeated and not constraints.allow_repeat:
                     self._record_pin(
                         plan, request, kind, "already_completed", request, section.code, [],
-                        f"{section.code} is already completed or in progress; it was not placed again",
+                        f"{section.code} is already completed or in progress. Pass "
+                        "allow_repeat=true only if Banner permits a repeat, or choose another course.",
                     )
                     continue
                 if request in by_crn:
@@ -1100,10 +1110,12 @@ class Planner:
                         "the course is in the exclusion list",
                     )
                     continue
-                if self._already_completed(key.code, passed):
+                repeated = self._already_completed(key.code, passed)
+                if repeated and not constraints.allow_repeat:
                     self._record_pin(
                         plan, request, kind, "already_completed", None, key.code, [],
-                        f"{key.code} is already completed or in progress; it was not placed again",
+                        f"{key.code} is already completed or in progress. Pass "
+                        "allow_repeat=true only if Banner permits a repeat, or choose another course.",
                     )
                     continue
                 candidates = [
@@ -1180,6 +1192,7 @@ class Planner:
                 verify_at_registration=state is not Availability.OPEN,
                 requires_arrangement=is_arranged_number(chosen.number),
                 partial_tba=chosen.partial_tba,
+                repeated=repeated,
                 meets=[
                     f"{meeting.day.value} {meeting.start.strftime('%H:%M')}-{meeting.end.strftime('%H:%M')} {meeting.location}".strip()
                     for meeting in chosen.meetings
@@ -1195,6 +1208,11 @@ class Planner:
             selected_codes.add(chosen.code)
             selected.append(chosen)
             credits_used = round(credits_used + credits, 2)
+            if repeated:
+                plan.warnings.append(
+                    f"{chosen.code} CRN {chosen.crn}: repeat requested; Banner repeat "
+                    "limits/advisor approval may apply"
+                )
             if prereq_unverified:
                 plan.warnings.append(
                     f"pinned {chosen.code} CRN {chosen.crn}: prerequisite could not be "
@@ -1206,7 +1224,7 @@ class Planner:
                 bucket[1] += 1
             self._record_pin(
                 plan, request, kind, "placed", chosen.crn, chosen.code,
-                [requirement.id for requirement in matched], "",
+                [requirement.id for requirement in matched], "", repeated=repeated
             )
 
     def _place_requirement(
@@ -1716,7 +1734,7 @@ def verify_draft(draft: DraftPlan, snapshot: TermSnapshot) -> list[str]:
     if abs(total - draft.total_credits) > 1e-6:
         problems.append(f"credit total mismatch: selections={total:g}, plan={draft.total_credits:g}")
     for pin in draft.pinned:
-        if pin.outcome not in {"placed", "already_completed"}:
+        if pin.outcome != "placed":
             problems.append(
                 f"pinned {pin.kind} {pin.request!r} not placed ({pin.outcome}): {pin.reason}"
             )

@@ -741,9 +741,9 @@ def test_pin_of_completed_course_is_not_placed(tmp_path):
     )
     draft = planner.draft("202620", Constraints(required_courses=["CYS 4245"]))
     assert draft.selections == []
-    assert draft.errors == []
     assert draft.pinned[0].outcome == "already_completed"
     assert "already completed" in draft.pinned[0].reason
+    assert any("allow_repeat=true" in error for error in draft.errors)
     assert draft.total_credits == 0.0
 
 
@@ -756,9 +756,9 @@ def test_pin_of_in_progress_crn_is_not_placed(tmp_path):
     )
     draft = planner.draft("202620", Constraints(required_crns=["1"]))
     assert draft.selections == []
-    assert draft.errors == []
     assert draft.pinned[0].outcome == "already_completed"
     assert draft.pinned[0].crn == "1"
+    assert any("allow_repeat=true" in error for error in draft.errors)
 
 
 def test_zero_low_variable_credit_reserves_high_end(tmp_path):
@@ -940,3 +940,60 @@ def test_partially_tba_selection_is_flagged(tmp_path):
     draft = planner.draft("202620")
     assert draft.selections[0].partial_tba is True
     assert any("unscheduled (TBA) meeting" in warning for warning in draft.warnings)
+
+
+def test_repeat_pin_allow_repeat_places_the_completed_course(tmp_path):
+    completed = section("23251", subject="COS", number="4841", credits=2.0)
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Additional credits for double major",
+                notes="choose 8 credits from the following",
+                options=[CourseRef(subject="COS", number="4841")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [completed])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    planner.passed.add("COS 4841")
+    default = planner.draft("202620", Constraints(required_crns=["23251"]))
+    assert default.selections == []
+    assert default.pinned[0].outcome == "already_completed"
+    assert any("allow_repeat=true" in error for error in default.errors)
+
+    repeated = planner.draft(
+        "202620", Constraints(required_crns=["23251"], allow_repeat=True)
+    )
+    assert [selection.crn for selection in repeated.selections] == ["23251"]
+    assert repeated.total_credits == 2.0
+    assert repeated.selections[0].repeated is True
+    assert repeated.pinned[0].outcome == "placed"
+    assert repeated.pinned[0].repeated is True
+    assert any("repeat requested" in warning for warning in repeated.warnings)
+
+
+def test_completed_non_pin_requirement_is_still_not_placed(tmp_path):
+    completed = section("1", subject="COS", number="4841", credits=2.0)
+    audit = audit_with(
+        [
+            RequirementBlock(
+                label="Research",
+                pick_n_of=1,
+                options=[CourseRef(subject="COS", number="4841")],
+            )
+        ]
+    )
+    planner = Planner(
+        audit,
+        {"202620": snapshot("202620", [completed])},
+        ratings=ratings(tmp_path),
+        prereqs=no_prereqs(tmp_path),
+    )
+    planner.passed.add("COS 4841")
+    draft = planner.draft("202620")
+    assert draft.selections == []
+    assert "already completed" in draft.unplaced_requirements[0].reason

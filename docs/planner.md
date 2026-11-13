@@ -72,7 +72,9 @@ Hard constraints
    buckets. An unavailable, excluded, conflicting, prerequisite-blocked or
    over-budget pin is reported in `pinned` and `errors`, and the draft response
    is `ok: false`; it is never dropped silently. A pin whose course is already
-   completed or in progress reports `already_completed` (no credits, no error).
+   completed or in progress reports `already_completed` and is a hard failure
+   unless `allow_repeat=true`, which places the repeat (with a warning) and
+   counts its credits normally.
 6. `min_credits` tops up from remaining elective/optional candidates after the
    normal pass. If it still cannot be met, `min_credits_met` is false and a
    warning names the shortfall; no course is invented.

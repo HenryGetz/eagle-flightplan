@@ -9,7 +9,9 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - One-semester correctness: pins of a completed or in-progress course report
-  `already_completed` and are not placed again (no credits, no hard error), and
+  `already_completed` and fail (`ok: false` + named `pin_errors`); an explicit
+  `allow_repeat=true` (alias `repeat`) places the repeat and warns that Banner
+  repeat limits/advisor approval may apply, and
   prerequisite minimum grades are enforced (a final grade below Banner's
   `Minimum Grade of X` blocks; in-progress/transfer grades are not failed).
 - A variable-credit section with a 0-credit low end reserves its high end until

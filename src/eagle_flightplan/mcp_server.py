@@ -1108,6 +1108,7 @@ def build_constraints(
     excluded_crns: Sequence[str | int] | str | None = None,
     excluded_courses: Sequence[str] | str | None = None,
     credit_overrides: dict[str, float] | None = None,
+    allow_repeat: bool = False,
 ) -> Constraints:
     if max_credits <= 0:
         raise ValueError("max_credits must be greater than 0.")
@@ -1137,6 +1138,7 @@ def build_constraints(
         excluded_crns=_norm_list(excluded_crns),
         excluded_courses=_norm_list(excluded_courses),
         credit_overrides=overrides,
+        allow_repeat=bool(allow_repeat),
     )
 
 
@@ -1192,6 +1194,7 @@ def _draft_selection_payload(selection, section: Section | None = None) -> dict:
         "prereq_unverified": selection.prereq_unverified,
         "partial_tba": selection.partial_tba,
         "requires_arrangement": selection.requires_arrangement,
+        "repeated": selection.repeated,
         "requirement_id": selection.requirement_id,
         "requirement": selection.requirement,
         "group": selection.group,
@@ -1269,6 +1272,7 @@ def draft_payload(
     avoid_instructors: Sequence[str] | str | None = None,
     exclude_arrangement: bool = False,
     hours: dict[str, float] | None = None,
+    allow_repeat: bool = False,
 ) -> dict:
     if profile not in {"max_rated"}:
         raise ValueError(
@@ -1288,6 +1292,7 @@ def draft_payload(
         excluded_crns=exclude_crns,
         excluded_courses=exclude_courses,
         credit_overrides=hours,
+        allow_repeat=allow_repeat,
     )
     terms = [term]
     summer = _next_summer(term) if include_summer else None
@@ -1314,6 +1319,7 @@ def draft_payload(
             "avoid_instructors": list(constraints.avoid_instructors),
             "exclude_arrangement": constraints.exclude_arrangement,
             "hours": dict(constraints.credit_overrides),
+            "allow_repeat": constraints.allow_repeat,
         },
         "current_term": current_term,
         "student": audit.student_name,
@@ -1382,6 +1388,7 @@ def _semester_selection(row: dict[str, Any]) -> dict[str, Any]:
         "prereq_unverified": row.get("prereq_unverified"),
         "partial_tba": row.get("partial_tba"),
         "requires_arrangement": row.get("requires_arrangement"),
+        "repeated": row.get("repeated"),
     }
 
 
@@ -1546,6 +1553,7 @@ def _semester_plan_payload_unlocked(
     pins: Sequence[str] | str | None = None,
     courses: Sequence[str] | str | None = None,
     include_banner_plans: bool = True,
+    allow_repeat: bool = False,
 ) -> dict:
     """One-call semester report: draft + conflicts + ticket + Banner plans.
 
@@ -1574,6 +1582,7 @@ def _semester_plan_payload_unlocked(
         avoid_instructors=avoid_instructors,
         exclude_arrangement=exclude_arrangement,
         hours=hours,
+        allow_repeat=allow_repeat,
     )
     requested = draft.get("requested") or {}
     hours_map = {
@@ -1751,6 +1760,12 @@ def _semester_plan_payload_unlocked(
         "rated_picks": body.get("rated_picks"),
         "unrated_picks": body.get("unrated_picks"),
         "requested": requested,
+        "assumptions": {
+            "allow_repeat": bool(requested.get("allow_repeat", allow_repeat)),
+            "max_credits": requested.get("max_credits", max_credits),
+            "min_credits": requested.get("min_credits", min_credits),
+            "hours": hours_map,
+        },
         "catalog": draft.get("catalog"),
     }
     result: dict[str, Any] = {
@@ -3041,6 +3056,8 @@ def unw_plan_draft(
     credits: float | None = None,
     pins: Sequence[str] | str | None = None,
     courses: Sequence[str] | str | None = None,
+    allow_repeat: bool = False,
+    repeat: bool | None = None,
 ) -> dict:
     """Draft a conflict-free term plan from the audit, prioritizing major-required
     courses, then major pools, then minor-required, then gen-ed by RMP rating.
@@ -3053,9 +3070,11 @@ def unw_plan_draft(
     ``exclude_courses`` remove candidates. ``min_credits`` keeps filling elective
     pools until the load is met (and reports min_credits_met). ``hours`` maps a CRN
     to the credit hours to reserve for a variable-credit section (default: the low
-    end; a 0-low range reserves the high end unless overridden). Pins apply to
-    this single-term draft only, not to unw_roadmap. include_summer=True also
-    drafts the following summer for requirements that did not fit."""
+    end; a 0-low range reserves the high end unless overridden). A pin for a
+    course the audit already credits fails with ``already_completed`` unless
+    ``allow_repeat`` (alias ``repeat``) is true. Pins apply to this single-term
+    draft only, not to unw_roadmap. include_summer=True also drafts the following
+    summer for requirements that did not fit."""
     merged_courses = _merge_required_courses(required_courses, pins, courses)
     return _safe(
         draft_payload,
@@ -3075,6 +3094,7 @@ def unw_plan_draft(
         avoid_instructors,
         exclude_arrangement,
         hours,
+        allow_repeat or bool(repeat),
     )
 
 
@@ -3100,6 +3120,8 @@ def unw_semester_plan(
     pins: Sequence[str] | str | None = None,
     courses: Sequence[str] | str | None = None,
     include_banner_plans: bool = True,
+    allow_repeat: bool = False,
+    repeat: bool | None = None,
 ) -> dict:
     """ONE-CALL semester report (read-only): draft + conflicts + personal
     registration window + Banner Plan Ahead summaries. Canonical constraints are
@@ -3109,9 +3131,11 @@ def unw_semester_plan(
     with ratings/credits/covers/rationale/prereq_unverified), ``tba_crns`` /
     ``tba_sections``, ``prereq_unverified_crns``, grid, pinned/pin_errors/unplaced/
     warnings, a conflict summary, the registration window and Banner plan
-    summaries, plus an executable ``next_action`` naming the CRNs. A window or
-    Banner-plan failure is reported in its own field without hiding the draft.
-    It never registers/adds/drops."""
+    summaries, plus an executable ``next_action`` naming the CRNs. A pin for a
+    course the audit already credits fails with ``already_completed`` unless
+    ``allow_repeat`` (alias ``repeat``) is true. A window or Banner-plan failure
+    is reported in its own field without hiding the draft. It never
+    registers/adds/drops."""
     return _safe(
         semester_plan_payload,
         term=term,
@@ -3134,6 +3158,7 @@ def unw_semester_plan(
         pins=pins,
         courses=courses,
         include_banner_plans=include_banner_plans,
+        allow_repeat=allow_repeat or bool(repeat),
     )
 
 
