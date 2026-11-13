@@ -47,9 +47,6 @@ All notable changes to this project are documented here. The format follows
   mode waits for a seat first, then binds registration. `--probe` still skips it.
 - The old claim that clicking Add registers a section was wrong and is corrected
   in `docs/registration.md` and `docs/banner-api.md`.
-
-### Fixed
-
 - Minor-required blocks no longer use major priority: they are
   `gen_ed_required` (optional minor pools are `gen_ed_fill`), so a 16-credit
   generic draft places major-required/major-pool courses before a minor.
