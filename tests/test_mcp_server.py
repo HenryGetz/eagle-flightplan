@@ -1319,8 +1319,8 @@ def test_semester_plan_compact_shape_and_error_resilience(monkeypatch) -> None:
     assert out["conflicts"]["count"] == 0
     assert out["registration"]["start"].startswith("2026-11-16T08:30")
     assert out["banner_plans"]["count"] == 1
-    assert "Ticket assigned; opens" in out["next_action"]
-    assert "unw_register_preview" in out["next_action"]
+    assert "window is open until" in out["next_action"]
+    assert "do not attempt to register yet" in out["next_action"]
     assert "23251" in out["next_action"]
     assert "variable credit" in out["next_action"]
 

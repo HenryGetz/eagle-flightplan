@@ -224,6 +224,24 @@ def window(term: str, *, ssb: SSBClient | None = None) -> RegistrationWindow:
                 "reason": f"{result.reason}; ticket from prepareRegistration",
             }
         )
+        # On the opening day Banner can omit studentEligValid from term/search
+        # while its own prepare page says the ticket is open. That page is the
+        # authoritative personal gate; only "allow" text (not "do not allow")
+        # inside the current window flips eligibility.
+        ticket_text = prepared.time_ticket_text.lower()
+        now = datetime.now(TZ)
+        if (
+            "allow" in ticket_text
+            and "do not allow" not in ticket_text
+            and prepared.start <= now
+            and (prepared.end is None or prepared.end >= now)
+        ):
+            update.update(
+                {
+                    "eligible": True,
+                    "reason": "Time tickets allow registration at this time (prepareRegistration)",
+                }
+            )
     return result.model_copy(update=update)
 
 

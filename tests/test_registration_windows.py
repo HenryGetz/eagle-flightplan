@@ -215,3 +215,25 @@ def test_window_prepare_failure_keeps_banner_text():
     assert result.parse_status == "not_eligible"
     assert result.reason.startswith("Term not eligible for registration")
     assert "prepare page unavailable" in result.reason
+
+
+def test_window_open_ticket_text_sets_eligible():
+    html = """
+    <html><body>
+      <p>Time tickets allow registration at this time.</p>
+      <p>Please register within these times:</p>
+      <p>01/01/2020 08:30 AM - 01/01/2030 11:59 PM</p>
+    </body></html>
+    """
+
+    class FakeSSB:
+        def set_term(self, term, mode):
+            return {"studentEligValid": False, "studentEligFailures": []}
+
+        def prepare_registration(self, term):
+            return html
+
+    result = window("202620", ssb=FakeSSB())
+    assert result.eligible is True
+    assert result.start.isoformat() == "2020-01-01T08:30:00-06:00"
+    assert "allow registration" in result.reason

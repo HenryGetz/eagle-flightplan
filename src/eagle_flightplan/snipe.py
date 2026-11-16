@@ -20,7 +20,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Iterable, Literal
+from typing import Callable, Iterable, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -48,7 +48,9 @@ ADD_BUTTON_SELECTORS = (
 )
 SAVE_BUTTON_SELECTORS = (
     "#saveButton",
+    "button:has-text('Submit')",
     "button:has-text('Save')",
+    "input[value*='Submit' i]",
     "input[value*='Save' i]",
     "button[id*='save' i]",
 )
@@ -85,6 +87,11 @@ ALTERNATE_PIN_SELECTORS = (
     "#input_alt_pin",
     "input[name='altPin']",
     "#div_alt_pin",
+)
+ENTER_CRNS_TAB_SELECTORS = (
+    "#enterCRNs-tab",
+    "a[href='#tabs-enterCRN']",
+    "li.ui-tabs-tab:has-text('Enter CRNs')",
 )
 
 #: A stage response is not a registration. These phrases mean the CRN was added
@@ -276,6 +283,23 @@ def _first_visible_selector(page, selectors: Iterable[str]) -> str | None:
     return None
 
 
+def _enabled_selector(page, selectors: Iterable[str], *, timeout: float = 8.0) -> str | None:
+    """First visible control that is actually enabled (Submit enables after Add)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        selector = _first_visible_selector(page, selectors)
+        if selector:
+            try:
+                disabled = bool(page.locator(selector).first.evaluate("e => !!e.disabled"))
+            except Exception:  # noqa: BLE001 - fake/minimal pages
+                disabled = False
+            if not disabled:
+                return selector
+        if time.monotonic() >= deadline:
+            return None
+        page.wait_for_timeout(500)
+
+
 def _body_delta(before: str, after: str) -> str:
     """New text added between two page snapshots."""
     before = before or ""
@@ -288,6 +312,12 @@ def _body_delta(before: str, after: str) -> str:
     while index < limit and before[index] == after[index]:
         index += 1
     return after[index:]
+
+
+def _post_save_missing(body: str, staged: Sequence[str]) -> list[str]:
+    """CRNs the post-Save page does not show as registered."""
+    text = body or ""
+    return [crn for crn in staged if crn not in text]
 
 
 def _staging_looks_successful(text: str, crn: str | None = None) -> bool:
@@ -330,9 +360,14 @@ def probe_page(page, ssb_base: str) -> dict:
     """Check that the registration UI renders and our selectors resolve."""
     page.goto(f"{ssb_base}/classRegistration/classRegistration", wait_until="domcontentloaded")
     page.wait_for_timeout(2500)
+    if not _first_visible_selector(page, CRN_INPUT_SELECTORS):
+        tab = _first_visible_selector(page, ENTER_CRNS_TAB_SELECTORS)
+        if tab:
+            page.click(tab)
+            page.wait_for_timeout(1000)
     body = page.inner_text("body")[:2000]
-    crn_selector = _first_selector(page, CRN_INPUT_SELECTORS)
-    add_selector = _first_selector(page, ADD_BUTTON_SELECTORS)
+    crn_selector = _first_visible_selector(page, CRN_INPUT_SELECTORS)
+    add_selector = _first_visible_selector(page, ADD_BUTTON_SELECTORS)
     return {
         "url": page.url,
         "title": page.title(),
@@ -357,6 +392,34 @@ def _term_option_selectors(text: str) -> tuple[str, ...]:
     )
 
 
+def _alternate_pin_control(page) -> str | None:
+    """Return a PIN control only when it is a real, enabled prompt.
+
+    Banner's term page ships a disabled ``#input_alt_pin`` template with the
+    ``visuallyhidden disabled`` class. Playwright's ``is_visible`` still returns
+    true for it, so visibility alone is not proof that a PIN is required.
+    """
+    for selector in ALTERNATE_PIN_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            if not locator.count() or not locator.first.is_visible():
+                continue
+            element = locator.first
+            try:
+                disabled = bool(element.evaluate("e => !!e.disabled"))
+                required = bool(element.evaluate("e => !!e.required"))
+                classes = (element.get_attribute("class") or "").lower()
+            except Exception:  # noqa: BLE001 - fake/minimal pages: be conservative
+                return selector
+            if disabled or "disabled" in classes:
+                continue
+            if required or "required" in classes or not disabled:
+                return selector
+        except Exception:  # noqa: BLE001 - probing must never crash the run
+            continue
+    return None
+
+
 def _select_term_impl(
     page,
     ssb_base: str,
@@ -375,39 +438,58 @@ def _select_term_impl(
     ``registration_ui_unavailable``. This never clicks Add/Save and never guesses
     an alternate PIN.
     """
-    page.goto(f"{ssb_base}/term/termSelection?mode=registration", wait_until="domcontentloaded")
+    # registerPostSignIn establishes the registration-app session and redirects
+    # to termSelection. Going straight to termSelection can leave a stale
+    # registration session that renders the "You must be logged in" landing page.
+    page.goto(
+        f"{ssb_base}/registration/registerPostSignIn?mode=registration",
+        wait_until="domcontentloaded",
+    )
     page.wait_for_timeout(2500)
+    if "termSelection" not in page.url:
+        page.goto(
+            f"{ssb_base}/term/termSelection?mode=registration",
+            wait_until="domcontentloaded",
+        )
+        page.wait_for_timeout(1500)
 
-    pin = _first_visible_selector(page, ALTERNATE_PIN_SELECTORS)
+    pin = _alternate_pin_control(page)
     if pin:
         return SnipeResult(
             status="alternate_pin_required",
             reason=f"Banner asks for an alternate PIN ({pin}); no PIN was guessed.",
         )
 
-    combo = _first_visible_selector(page, TERM_COMBO_SELECTORS)
-    if combo:
-        page.click(combo)
-        page.wait_for_timeout(500)
-    typing = _first_visible_selector(page, TERM_INPUT_SELECTORS)
-    if typing:
-        page.fill(typing, label or term)
-        page.wait_for_timeout(500)
+    selected_value: str | None = None
+    try:
+        selected_value = page.locator("#txt_term").first.input_value()
+    except Exception:  # noqa: BLE001 - fake/minimal pages
+        selected_value = None
 
     option: str | None = None
-    for text in [value for value in (label, term) if value]:
-        for selector in _term_option_selectors(text):
-            try:
-                if page.locator(selector).count():
-                    page.click(selector)
-                    option = selector
-                    break
-            except Exception:  # noqa: BLE001 - selector probing must never crash
-                continue
-        if option:
-            break
+    if selected_value != term:
+        combo = _first_visible_selector(page, TERM_COMBO_SELECTORS)
+        if combo:
+            page.click(combo)
+            page.wait_for_timeout(500)
+        typing = _first_visible_selector(page, TERM_INPUT_SELECTORS)
+        if typing:
+            page.fill(typing, label or term)
+            page.wait_for_timeout(750)
 
-    if option is None:
+        for text in [value for value in (label, term) if value]:
+            for selector in _term_option_selectors(text):
+                try:
+                    if page.locator(selector).count():
+                        page.click(selector)
+                        option = selector
+                        break
+                except Exception:  # noqa: BLE001 - selector probing must never crash
+                    continue
+            if option:
+                break
+
+    if option is None and selected_value != term:
         body = " ".join((page.inner_text("body") or "").split())
         if "not eligible" in body.lower():
             return SnipeResult(
@@ -433,12 +515,14 @@ def _select_term_impl(
     deadline = clock() + timeout_seconds
     while True:
         page.wait_for_timeout(1000)
-        if _first_visible_selector(page, ALTERNATE_PIN_SELECTORS):
+        if _alternate_pin_control(page):
             return SnipeResult(
                 status="alternate_pin_required",
                 reason="Banner asks for an alternate PIN after Continue; no PIN was guessed.",
             )
-        if _first_visible_selector(page, CRN_INPUT_SELECTORS):
+        if _first_selector(page, CRN_INPUT_SELECTORS) or _first_selector(
+            page, ENTER_CRNS_TAB_SELECTORS
+        ):
             return None
         body = " ".join((page.inner_text("body") or "").split()).lower()
         if "not eligible" in body:
@@ -492,6 +576,7 @@ def execute_targets(
     allow_waitlist: bool,
     max_attempts: int,
     timeout_seconds: int,
+    commit_timeout: float = 8.0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> SnipeResult:
@@ -528,8 +613,13 @@ def execute_targets(
     try:
         page.goto(f"{ssb_base}/classRegistration/classRegistration", wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
-        input_selector = _first_selector(page, CRN_INPUT_SELECTORS)
-        add_selector = _first_selector(page, ADD_BUTTON_SELECTORS)
+        if not _first_visible_selector(page, CRN_INPUT_SELECTORS):
+            tab = _first_visible_selector(page, ENTER_CRNS_TAB_SELECTORS)
+            if tab:
+                page.click(tab)
+                page.wait_for_timeout(1200)
+        input_selector = _first_visible_selector(page, CRN_INPUT_SELECTORS)
+        add_selector = _first_visible_selector(page, ADD_BUTTON_SELECTORS)
     except Exception as exc:  # noqa: BLE001 - T0 must never traceback
         return _browser_failure(exc, "opening the registration page")
     if not input_selector or not add_selector:
@@ -643,13 +733,13 @@ def execute_targets(
     if not staged:
         return SnipeResult(status="no_targets", reason="no target was staged", attempted=attempted)
 
-    save_selector = _first_visible_selector(page, SAVE_BUTTON_SELECTORS)
+    save_selector = _enabled_selector(page, SAVE_BUTTON_SELECTORS, timeout=commit_timeout)
     if not save_selector:
         return SnipeResult(
             status="staged_not_committed",
             reason=(
-                f"Staged CRNs {', '.join(staged)}; Save control not found — "
-                "nothing was committed"
+                f"Staged CRNs {', '.join(staged)}; Submit control was not found or "
+                "never became enabled — nothing was committed by this run"
             ),
             attempted=attempted,
         )
@@ -683,6 +773,18 @@ def execute_targets(
         )
     outcome = classify_outcome(body)
     if outcome == "registered":
+        missing = _post_save_missing(body, staged)
+        if missing:
+            return SnipeResult(
+                status="save_unknown",
+                reason=(
+                    f"Save/Submit returned a registration page, but the post-Save "
+                    f"schedule does not confirm CRN(s) {', '.join(missing)}; "
+                    f"confirmed: {', '.join(crn for crn in staged if crn not in missing) or 'none'}. "
+                    "Verify the Banner schedule; do not assume registration."
+                ),
+                attempted=attempted,
+            )
         return SnipeResult(
             status="registered",
             reason=f"committed {', '.join(staged)} after Save",

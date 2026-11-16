@@ -21,6 +21,7 @@ from eagle_flightplan.snipe import (
     SafetyError,
     SnipeOptions,
     Target,
+    _alternate_pin_control,
     _seats_ready,
     authorize_live,
     check_registration_eligible,
@@ -196,7 +197,7 @@ def test_live_stages_then_saves_once_and_reports_registered():
     page = FakePage(UI | {SAVE}, bodies=[
         "",
         "Course added 22449 to schedule",
-        "Registration Successful",
+        "Registration Successful; 22449 Registered",
     ])
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
@@ -213,10 +214,10 @@ def test_missing_save_is_staged_not_committed():
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
         ssb_base="https://x/ssb", term="202620", dry_run=False, allow_waitlist=False,
-        max_attempts=2, timeout_seconds=60, sleep=lambda _: None,
+        max_attempts=2, timeout_seconds=60, commit_timeout=0, sleep=lambda _: None,
     )
     assert result.status == "staged_not_committed"
-    assert "22449" in result.reason and "Save control not found" in result.reason
+    assert "22449" in result.reason and "Submit control" in result.reason
     assert page.clicks == [ADD]
 
 
@@ -363,7 +364,10 @@ def test_unrelated_pending_text_is_not_staging_success():
 
 
 def test_crn_pending_schedule_row_counts_as_staged():
-    page = FakePage(UI | {SAVE}, bodies=["", "22449 scheduled in your plan", "Registration Successful"])
+    page = FakePage(
+        UI | {SAVE},
+        bodies=["", "22449 scheduled in your plan", "Registration Successful; 22449 Registered"],
+    )
     result = execute_targets(
         page, [Target(crn="22449", course="CYS 4855")],
         ssb_base="https://x/ssb", term="202620", dry_run=False, allow_waitlist=False,
@@ -380,7 +384,8 @@ def test_select_term_flow_reaches_crn_input():
     )
     result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
     assert result is None
-    assert page.urls[0].endswith("/term/termSelection?mode=registration")
+    assert any(url.endswith("/term/termSelection?mode=registration") for url in page.urls)
+    assert page.urls[0].endswith("/registration/registerPostSignIn?mode=registration")
     assert "#s2id_txt_term" in page.clicks
     assert "li.select2-results__option:has-text('Spring 2027')" in page.clicks
     assert "#term-go" in page.clicks
@@ -676,3 +681,61 @@ def test_run_browser_refreshes_session_after_prewarm(monkeypatch, tmp_path):
     assert calls["window"] == 2
     assert calls["sleep"]
     assert result.capture_path == str(capture)
+
+
+class FakePinLocator:
+    def __init__(self, disabled: bool):
+        self.disabled = disabled
+
+    def count(self):
+        return 1
+
+    @property
+    def first(self):
+        return self
+
+    def is_visible(self):
+        return True
+
+    def evaluate(self, script):
+        if "disabled" in script:
+            return self.disabled
+        if "required" in script:
+            return not self.disabled
+        return None
+
+    def get_attribute(self, name):
+        return "visuallyhidden disabled" if self.disabled else "visuallyhidden"
+
+
+class FakePinPage:
+    def __init__(self, disabled: bool):
+        self.locator_obj = FakePinLocator(disabled)
+
+    def locator(self, selector):
+        return self.locator_obj
+
+
+def test_disabled_alternate_pin_template_is_not_a_prompt():
+    assert _alternate_pin_control(FakePinPage(disabled=True)) is None
+
+
+def test_enabled_alternate_pin_is_a_prompt():
+    assert _alternate_pin_control(FakePinPage(disabled=False)) == "#input_alt_pin"
+
+
+class FakeSelectedTermPage(FakePage):
+    def locator(self, selector):
+        class Locator(FakeLocator):
+            def input_value(self):
+                return "202620"
+
+        return Locator(self, selector)
+
+
+def test_select_term_skips_picker_when_term_already_selected():
+    page = FakeSelectedTermPage({ "#term-go", "#txt_crn" }, body="Select a Term")
+    result = select_term(page, "https://x/ssb", "202620", "Spring 2027", sleep=lambda _: None)
+    assert result is None
+    assert page.clicks == ["#term-go"]
+    assert "#s2id_txt_term" not in page.clicks

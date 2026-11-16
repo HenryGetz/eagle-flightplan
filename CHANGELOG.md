@@ -170,6 +170,15 @@ All notable changes to this project are documented here. The format follows
   single-token course codes.
 - `pytest` now uses `pythonpath = ["src"]`, so bare `pytest -q` works from a clean
   checkout.
+- Live snipe now completes the real registration UI: `registerPostSignIn` is
+  used to establish the registration-app session, the `Enter CRNs` tab is
+  activated, a preselected term skips the fragile select2 option click, disabled
+  alternate-PIN templates are ignored, and the enabled `#saveButton`/Submit
+  control is required before clicking. A successful post-Save page must name
+  every staged CRN or the result is `save_unknown`, never `registered`.
+- A `Prepare for Registration` "Time tickets allow registration at this time."
+  inside the current window flips `eligible` even when Banner omits
+  `studentEligValid` from `term/search`.
 - `auth.ensure()` (and `heal_session`) now honor `UNW_AUTO_LOGIN=0`: a stale
   session raises `SessionExpiredError` with the explicit `login --force` command
   instead of launching Chromium. The audit/Banner/plan/MCP callers that rely on
