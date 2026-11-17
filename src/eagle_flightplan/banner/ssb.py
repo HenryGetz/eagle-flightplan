@@ -276,6 +276,35 @@ class SSBClient:
                 except Exception:
                     logger.info("could not restore Banner term %s", previous)
 
+    def registration_rows(self, term: str) -> list[dict[str, Any]]:
+        """Read-only registration grid rows for ``term`` (never writes).
+
+        The registration micro-app establishes its own server session on the
+        class-registration page; ``submitSummaryRegistration`` then returns every
+        committed and pending row with ``statusIndicator``/``statusDescription``.
+        This is the same read the UI grid performs. No action is selected and
+        nothing is submitted.
+        """
+        if self._term != term:
+            self.set_term(term, mode="registration")
+        self._request("GET", "/classRegistration/classRegistration")
+        unique = "".join(random.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(4))
+        payload = self._get_json(
+            "/classRegistration/submitSummaryRegistration",
+            {
+                "sortColumn": "courseTitle",
+                "sortDirection": "asc",
+                "uniqueSessionId": f"{unique}{int(_time.time() * 1000)}",
+                "term": term,
+            },
+        )
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        return [
+            row
+            for row in (rows or [])
+            if isinstance(row, dict) and str(row.get("term") or term) == term
+        ]
+
     def require_term(self, term: str | None = None) -> str:
         resolved = term or self._term
         if not resolved:

@@ -305,6 +305,121 @@ def snipe(
         raise typer.Exit(code=1)
 
 
+def _render_drop_result(result) -> None:
+    console.print(f"status: [bold]{result.status}[/]")
+    if result.crn:
+        console.print(f"term {result.term} · CRN {result.crn}")
+    else:
+        console.print(f"term {result.term} · withdraw")
+    if result.reason:
+        console.print(result.reason)
+    if result.banner_message and result.banner_message != result.reason:
+        console.print(f"banner: {result.banner_message}")
+    table = Table("CRN", "course", "title", "credits", "status")
+    for row in result.schedule_before:
+        table.add_row(row.crn, row.course, row.title, f"{row.credits:g}" if row.credits else "-", row.status)
+    if result.schedule_before:
+        console.print(table)
+    if result.removed:
+        console.print(f"removed: {', '.join(row.crn for row in result.removed)}")
+    if result.schedule_after is not None:
+        label = "would leave" if result.dry_run else "registered now"
+        console.print(
+            f"{label}: {len(result.schedule_after)} "
+            f"({', '.join(row.crn for row in result.schedule_after) or 'none'})"
+        )
+    if result.after_read_error:
+        console.print(f"[yellow]read-back failed:[/] {result.after_read_error}")
+    if result.capture_path:
+        console.print(f"captured: {result.capture_path}")
+    if result.writes_performed:
+        console.print(f"writes: {', '.join(result.writes_performed)}")
+
+
+def _drop_live_gate(term: str, i_understand: bool, confirm_term: str | None) -> None:
+    from .drop import DropSafetyError, authorize_live_drop
+
+    try:
+        authorize_live_drop(
+            term,
+            i_understand=i_understand,
+            confirm_term=confirm_term,
+        )
+    except DropSafetyError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+
+
+@app.command()
+def drop(
+    term: str = typer.Option("202620", "--term", help="Term code."),
+    crn: str = typer.Option(..., "--crn", help="Exact CRN to drop (must be currently Registered)."),
+    yes: bool = typer.Option(False, "--yes", help="Perform the drop (requires --i-understand and the exact term)."),
+    i_understand: bool = typer.Option(False, "--i-understand", help="Explicit consent for the live drop."),
+    confirm_term: str | None = typer.Option(None, "--confirm-term", help="Exact term code for non-interactive live runs."),
+) -> None:
+    """Drop ONE registered course (dry-run by default; one CRN, one Submit).
+
+    The dry run reads the live schedule and reports the exact row and credit
+    change. A live run selects Banner's "Web Dropped" action on that CRN only and
+    clicks Submit once, then reads the schedule back. There is no retry.
+    """
+    from .drop import SUCCESS_STATUSES, DropError, DropOptions, run_drop
+
+    if yes:
+        _drop_live_gate(term, i_understand, confirm_term)
+    try:
+        result = run_drop(
+            DropOptions(
+                term=term,
+                crn=crn,
+                action="drop",
+                live=yes,
+                i_understand=i_understand,
+            )
+        )
+    except (DropError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    _render_drop_result(result)
+    if result.status not in SUCCESS_STATUSES:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def withdraw(
+    term: str = typer.Option("202620", "--term", help="Term code."),
+    yes: bool = typer.Option(False, "--yes", help="Perform the withdrawal (requires --i-understand and the exact term)."),
+    i_understand: bool = typer.Option(False, "--i-understand", help="Explicit consent for the live withdrawal."),
+    confirm_term: str | None = typer.Option(None, "--confirm-term", help="Exact term code for non-interactive live runs."),
+) -> None:
+    """Withdraw from EVERY registered course in a term (dry-run by default).
+
+    Banner has no separate withdraw action: the live run selects "Web Dropped" on
+    every row enumerated by a read-only schedule read and clicks Submit once. The
+    page must still match that exact set or nothing is submitted. No retry.
+    """
+    from .drop import SUCCESS_STATUSES, DropError, DropOptions, run_drop
+
+    if yes:
+        _drop_live_gate(term, i_understand, confirm_term)
+    try:
+        result = run_drop(
+            DropOptions(
+                term=term,
+                action="withdraw",
+                live=yes,
+                i_understand=i_understand,
+            )
+        )
+    except (DropError, RuntimeError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    _render_drop_result(result)
+    if result.status not in SUCCESS_STATUSES:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def setup(
     yes: bool = typer.Option(False, "--yes", help="Non-interactive: accept defaults."),

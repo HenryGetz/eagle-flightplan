@@ -10,8 +10,10 @@ the same functions and renders the same payloads).
 Design rules:
 
 * Domain modules are used as-is; this file only composes and normalises them.
-* Nothing here writes to Banner registration. The only Banner writes are the
-  Plan Ahead tools (create/add/remove/delete), which touch plan worksheets.
+* Nothing here adds or registers sections. The only Banner registration writes are
+  the confirmed ``unw_drop_course`` / ``unw_withdraw`` tools (one ``Web Dropped``
+  action per target row, one Submit) and the Plan Ahead worksheet tools
+  (create/add/remove/delete), which touch plan worksheets only.
 * Cached data always reports its provenance (``catalog.source`` /
   ``age_seconds``) so an agent can tell a live fetch from a cached snapshot.
 """
@@ -31,6 +33,7 @@ import httpx
 from mcp.server.mcpserver import MCPServer
 
 from . import auth
+from . import drop as drop_ops
 from .audit import AuditClient, parse_audit
 from .audit.models import (
     Audit,
@@ -3378,6 +3381,147 @@ def plan_delete_guarded(
 
 
 # --------------------------------------------------------------------------- #
+# confirmed drops and withdrawals (registration writes)
+# --------------------------------------------------------------------------- #
+def _drop_diff(result: drop_ops.DropResult, action: str) -> dict[str, Any]:
+    after = result.schedule_after
+    credits_before = round(sum(row.credits or 0 for row in result.schedule_before), 2)
+    credits_after = (
+        round(sum(row.credits or 0 for row in after), 2) if after is not None else None
+    )
+    return {
+        "action": action,
+        "term": result.term,
+        "rows_removed": [row.model_dump() for row in result.removed],
+        "rows_remaining": (
+            [row.model_dump() for row in result.remaining] if after is not None else None
+        ),
+        "course_count_before": len(result.schedule_before),
+        "course_count_after": len(after) if after is not None else None,
+        "credits_before": credits_before,
+        "credits_after": credits_after,
+        "credits_delta": (
+            round(credits_after - credits_before, 2) if credits_after is not None else None
+        ),
+    }
+
+
+def _drop_result_payload(result: drop_ops.DropResult, *, success: set[str]) -> dict[str, Any]:
+    payload = result.model_dump()
+    payload.update(
+        {
+            "ok": result.status in success,
+            "writes_performed": result.writes_performed,
+            "schedule_before": drop_ops.schedule_payload(
+                result.term, result.schedule_before
+            ),
+            "schedule_after": (
+                drop_ops.schedule_payload(result.term, result.schedule_after)
+                if result.schedule_after is not None
+                else None
+            ),
+            "read_back_error": result.after_read_error,
+            "diff": _drop_diff(
+                result,
+                "drop_course" if result.action == "drop" else "withdraw",
+            ),
+            "banner_message": result.banner_message or result.reason,
+        }
+    )
+    if result.status in {
+        "drop_unknown",
+        "withdraw_unknown",
+        "drop_unconfirmed",
+        "withdraw_unconfirmed",
+        "withdraw_partial",
+    }:
+        payload["hint"] = (
+            "Do NOT resubmit. Read the Banner schedule with unw_drop_course's "
+            "guard/read-back or the registration page, then decide with the user."
+        )
+    elif result.status in {"drop_rejected", "drop_confirm_required"}:
+        payload["hint"] = (
+            "Banner did not complete the action. Quote its message verbatim; do not "
+            "retry without the user's explicit decision."
+        )
+    return payload
+
+
+def drop_course_guarded(term: str, crn: str | int, confirm: bool) -> dict:
+    """Drop exactly one currently registered CRN, with enforced confirmation."""
+    code = str(crn).strip()
+    if not code:
+        raise ValueError("Pass the CRN to drop.")
+    with _BANNER_LOCK:
+        rows = drop_ops.read_schedule(term)
+    state = drop_ops.schedule_payload(term, rows)
+    target = next((row for row in rows if row.crn == code), None)
+    if target is None:
+        registered = ", ".join(row.crn for row in rows) or "none"
+        raise ValueError(
+            f"CRN {code} is not currently registered in {term}; no drop was attempted. "
+            f"Registered CRNs: {registered}."
+        )
+    credits = f"{target.credits:g} cr" if target.credits is not None else "unknown credits"
+    remaining_credits = round(state["total_credits"] - (target.credits or 0), 2)
+    effect = (
+        f"would DROP {target.course or 'course'} CRN {code} "
+        f"({target.title or 'untitled'}, {credits}) from term {term}; "
+        f"registered credits {state['total_credits']:g} -> {remaining_credits:g}"
+    )
+    if not confirm:
+        return _refuse_write(effect, state, {"confirm": True})
+    result = drop_ops.run_drop(
+        drop_ops.DropOptions(
+            term=term,
+            crn=code,
+            action="drop",
+            live=True,
+            i_understand=True,
+        )
+    )
+    return _drop_result_payload(result, success={"dropped"})
+
+
+def withdraw_guarded(term: str, confirm: bool, confirm_term: str | None) -> dict:
+    """Withdraw every registered CRN in one term, with double confirmation."""
+    with _BANNER_LOCK:
+        rows = drop_ops.read_schedule(term)
+    state = drop_ops.schedule_payload(term, rows)
+    listed = ", ".join(f"{row.course} {row.crn}" for row in rows) or "none"
+    effect = (
+        f"would WITHDRAW ALL {len(rows)} registered course(s) from term {term} "
+        f"({listed}); {state['total_credits']:g} credits -> 0. "
+        "Banner has no separate withdraw action: this is one Submit with Web Dropped "
+        "on every currently registered row."
+    )
+    required = {"confirm": True, "confirm_term": term}
+    if not confirm:
+        return _refuse_write(effect, state, required)
+    if confirm_term != term:
+        return _refuse_write(
+            effect,
+            state,
+            required,
+            reason=(
+                f"confirm_term {confirm_term!r} does not match the exact term {term!r}."
+            ),
+        )
+    if not rows:
+        raise ValueError(f"No registered courses in {term}; nothing was withdrawn.")
+    result = drop_ops.run_drop(
+        drop_ops.DropOptions(
+            term=term,
+            action="withdraw",
+            live=True,
+            i_understand=True,
+            expected_crns=[row.crn for row in rows],
+        )
+    )
+    return _drop_result_payload(result, success={"withdrawn"})
+
+
+# --------------------------------------------------------------------------- #
 # registration preview (read-only)
 # --------------------------------------------------------------------------- #
 def registration_preview_payload(
@@ -3602,7 +3746,6 @@ ASK BEFORE ASSUMING
   RMP weight, summer, graduation target, work, programs, prior credit, holds) —
   unw_roadmap reports its `assumptions`/`preferences_missing`; defaults are not
   preferences, so ask instead of guessing.
-
 PLANNING ORDER
 1. Scarce major-required courses first. Check unw_offering_matrix before proposing
    any course: never fall-only in spring (or vice versa); insufficient_history is
@@ -3635,9 +3778,11 @@ BANNER PLANS (term-scoped)
   never create/delete plans just to test something: the student's plans are real.
 
 REGISTRATION
-- unw_register_preview is a DRY RUN; it never POSTs add/drop/register. Use
-  unw_registration_window for tickets and quote Banner's failure text verbatim.
-
+- unw_register_preview is a DRY RUN; it never POSTs add/drop/register, and
+  unw_registration_window is read-only; quote Banner's failure text verbatim.
+- unw_drop_course / unw_withdraw ARE writes: confirm=true (withdraw also
+  confirm_term=term). One drop = one CRN; withdraw enumerates rows (no wildcard).
+  Never retry drop_unknown/drop_rejected/withdraw_partial; read the schedule back.
 OUTPUT
 - Show the ASCII grid and a rationale per pick; report discrepancies (completed
   course, dropped requirement, audit vs catalog) instead of resolving them.
@@ -4098,6 +4243,38 @@ def unw_banner_plan_delete(
     returns the removed plan, remaining plan count and a before/after diff read
     back from Banner."""
     return _safe(plan_delete_guarded, term, plan, confirm, confirm_name)
+
+
+@mcp.tool(structured_output=False)
+def unw_drop_course(term: str, crn: str | int, confirm: bool) -> dict:
+    """Drop ONE currently registered course (writes to Banner registration).
+
+    Confirmation is ENFORCED: ``confirm`` must be true, otherwise the tool names
+    the exact section, the current registered load and the projected credits and
+    performs no write. The CRN must be currently ``Registered`` in ``term``; any
+    other CRN is rejected before the browser opens. A live call selects Banner's
+    ``Web Dropped`` action (``DW``) on that row only and clicks Submit once,
+    capturing the request/response, then reads the schedule back before and after
+    and returns the exact removed row and credit diff. A rejection or an unclear
+    response is reported verbatim and never retried."""
+    return _safe(drop_course_guarded, term, crn, confirm)
+
+
+@mcp.tool(structured_output=False)
+def unw_withdraw(term: str, confirm: bool, confirm_term: str) -> dict:
+    """Withdraw from ALL registered courses in one term (writes to Banner).
+
+    Banner exposes no separate withdraw action: this selects ``Web Dropped``
+    (``DW``) on every currently registered row and clicks Submit once. It is NOT a
+    wildcard: the rows are enumerated by a read-only schedule read first and the
+    page must match that exact set, or nothing is submitted.
+
+    Confirmation is ENFORCED twice: ``confirm`` must be true AND ``confirm_term``
+    must equal the exact term code; otherwise the tool returns the full list of
+    courses that would be withdrawn and writes nothing. The result reports the
+    before/after schedule, every removed row and any survivor (``withdraw_partial``).
+    Never retried after Submit."""
+    return _safe(withdraw_guarded, term, confirm, confirm_term)
 
 
 @mcp.tool(structured_output=False)

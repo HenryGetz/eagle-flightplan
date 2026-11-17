@@ -15,9 +15,11 @@ broader read-only API.
 | transport | stdio only |
 | instructions | advertised in the MCP `initialize` result (60 lines) |
 
-The server never writes to Banner registration. The only writes are Plan Ahead
-worksheet operations (`*_plan_create/add/remove/delete`), which are explicitly
-named and documented as writes.
+The server writes to Banner registration only through two explicitly named,
+confirmation-enforced tools: `unw_drop_course` (one registered CRN) and
+`unw_withdraw` (every registered CRN in a term, enumerated first — never a
+wildcard). The other writes are Plan Ahead worksheet operations
+(`*_plan_create/add/remove/delete`).
 
 ---
 
@@ -79,6 +81,8 @@ actionable `"hint"` instead of raising.
 | `unw_banner_plan_delete` | `term`, `plan`, `confirm`, `confirm_name` | **Writes, irreversible.** `confirm` must be true and `confirm_name` must equal the exact plan name. Refusal reports the full intended deletion and current rows/credits. |
 | `unw_register_preview` | `term`, `crns`, `refresh?=false`, `hours?` | **DRY RUN ONLY.** Banner's real eligibility flags/failure text plus local seat, conflict and prerequisite checks (minimum grade thresholds enforced; a final grade below the threshold blocks). `prereq_ok` is `true` (verified), `false` (blocked) or `null` (unknown; see `reason`). `total_credits`/`planned_credits` use the draft basis with `hours` overrides. Never POSTs add/drop/register. |
 | `unw_registration_window` | `term?` | **READ-ONLY.** Personal time-ticket window(s) from `term/search` eligibility prose and, when that has no window, Banner's server-rendered Prepare for Registration page. Returns America/Chicago `start`/`end`, `eligible`, `parse_status`, `source` (`banner_term`/`banner_prepare`), `standing`, `registration_standing`, `standing_note`, `institution_hours`, `transfer_hours`, `time_ticket_text`, verbatim `raw_text`, seconds until opening and a countdown. `eligible=false` with a `start` means the ticket is assigned but the window is not open. `next_term` is computed even when `term` is passed. Never registers/adds/drops/withdraws. |
+| `unw_drop_course` | `term`, `crn`, `confirm` | **Writes to registration.** Drops exactly one currently `Registered` CRN. `confirm` is required and enforced; without `true` it names the exact section and projected credits and writes nothing. Rejects any CRN that is not currently registered, selects Banner's `Web Dropped` (`DW`) action on that row only, clicks Submit once, captures the request/response, then reads the schedule back and returns `rows_removed`, `rows_remaining` and the credit diff. `drop_unknown`/`drop_rejected`/`drop_unconfirmed` are never retried. |
+| `unw_withdraw` | `term`, `confirm`, `confirm_term` | **Writes to registration (all courses).** Banner has no separate withdraw action: this selects `Web Dropped` on every currently registered row and clicks Submit once. The rows are enumerated by a read-only schedule read and the page must match that exact set (`schedule_changed` otherwise). `confirm` must be true **and** `confirm_term` must equal the exact term code; otherwise the full intended list is returned with no write. Reports `withdrawn`, `withdraw_partial` with survivors, or a verbatim Banner message; never retried. |
 
 Section payloads include `credits_semantics` (`credits` is the display high
 end, `planning_credits` is what the planner reserves, `credit_range` is the raw
@@ -484,12 +488,15 @@ This mirrors the server `instructions`; the full text is advertised on
    `fillers` names minimum-load top-ups.
 5. **Never propose a time conflict.** Run `unw_conflicts` on the final CRN set
    and show the ASCII grid.
-6. **Never write to Banner plans without explicit user confirmation**, and
-   **never attempt real registration**. Write tools enforce `confirm=true`
-   (delete also requires the exact `confirm_name`); a refusal is a safe stop, not
-   a prompt to retry automatically. Report the returned diff after a confirmed
-   write. `unw_register_preview` is a dry run and `unw_registration_window` is
-   read-only; Banner's eligibility failure text is the answer.
+6. **Never write to Banner plans or registration without explicit user
+   confirmation.** Write tools enforce `confirm=true` (plan delete also requires
+   the exact `confirm_name`; withdraw also requires `confirm_term` equal to the
+   term). A refusal is a safe stop, not a prompt to retry automatically. Report
+   the returned diff after a confirmed write. `unw_drop_course` is one CRN;
+   `unw_withdraw` enumerates every registered row (no wildcard) and must never be
+   retried after an unknown/rejected result. `unw_register_preview` is a dry run,
+   `unw_registration_window` is read-only, and Banner's eligibility failure text
+   is the answer.
 7. **Unrated is unknown, not bad** (`null ≠ 0.0`); n<3 is weak evidence. State
    match confidence as name-matching confidence.
 8. **Always show the grid and a per-pick rationale.** Flag `NOT_YET_OPEN` /

@@ -76,14 +76,65 @@ carries the per-CRN errors, and conflicts/prerequisites are checked locally.
 
 ## What is NOT verified
 
-No term has been registration-eligible for this account yet, so the add/validate/
-drop **literal** endpoints and request bodies have never been exercised. The
-15-minute pre-window UI has no `#txt_crn`/`#saveButton`; it redirects to
-`/ssb/registration/registration` with "Term not eligible". The live run therefore
-adds a term-selection step (`select_term`) before `execute_targets`; the exact
-select2 option text and the CRN-input render at T0 are inferred from the term
-picker and Banner's markup, not yet observed. An alternate PIN is not required
-today (`enterPin: false`) but is detected and never guessed.
+The Spring 2027 (202620) window opened on 2026-11-16; the Add staging endpoint
+(`POST /ssb/classRegistration/addCRNRegistrationItems`) and the post-Save page were
+observed live, and five sections are registered. Drop/withdraw was mapped
+read-only on 2026-11-17 (DOM, client JS and a live page, with no drop submitted),
+so the **request body of `submitRegistration/batch` for a drop has not yet been
+exercised**. Until first use, treat the drop result as unproven unless the
+post-call schedule read-back confirms the CRN is gone. The 15-minute pre-window UI
+has no `#txt_crn`/`#saveButton`; it redirects to `/ssb/registration/registration`
+with "Term not eligible". The live run therefore adds a term-selection step
+(`select_term`) before `execute_targets`; entering the registration app requires
+the landing card (`#registerLink`) and Continue (`#term-go`), not a direct GET of
+`classRegistration` (which redirects to the landing page). An alternate PIN is not
+required today (`enterPin: false`) but is detected and never guessed.
+
+## Confirmed drop and withdraw (mapped live, 2026-11-17)
+
+The live page for 202620 was inspected read-only (no action selected, no Submit):
+
+* each committed row renders a hidden `select.actionDdl` with
+  `id="action-<crn>-ddl"`, `data-property="selectedAction"`, `data-term="202620"`
+  and `data-coursereferencenumber`. The only action option is
+  `value="DW"`, `text="Web Dropped"`; the default is `value="null"`, `"None"`;
+* the row status lives in `td[data-property="status"]` (`Registered` for the five
+  committed rows);
+* `#saveButton` (text `Submit`, initially disabled) carries
+  `data-registration-endpoint="/StudentRegistrationSsb/ssb/classRegistration/submitRegistration"`;
+* Banner's client JS appends `/batch` and POSTs
+  `{"create": [], "update": [<full row with selectedAction="DW">], "destroy": []}`
+  as JSON; selecting `DW` flips the row model's `recordStatus` to `Q` and enables
+  Submit, and nothing is sent before Submit;
+* **there is no separate withdraw action, control or endpoint.** Withdrawing is
+  `DW` on every registered row plus one Submit. The tool enumerates the rows from
+  a read-only `submitSummaryRegistration` read first and refuses if the page set
+  differs (`schedule_changed`).
+
+The implementation (`src/eagle_flightplan/drop.py`) drives that UI: exact
+`#action-<crn>-ddl`, canonical endpoint attribute check, one Submit click, network
+capture to `captures/registration-<term>-<drop|withdraw>-<ts>.jsonl`, and a
+before/after `submitSummaryRegistration` read. It never guesses a direct write
+endpoint. Statuses: `dropped`, `withdrawn`, `dry_run`, `not_registered`,
+`drop_rejected`, `drop_confirm_required`, `drop_unknown`, `drop_unconfirmed`,
+`withdraw_partial`, `withdraw_unknown`, `withdraw_unconfirmed`, `schedule_changed`, `drop_not_staged`,
+`drop_not_submitted`, `registration_ui_unavailable`, `session_dead`, `run_failed`.
+Only `dropped`, `withdrawn` and `dry_run` are success exits for these commands.
+
+CLI:
+
+```
+eagle-flightplan drop --term 202620 --crn 22449                      # dry run
+eagle-flightplan drop --term 202620 --crn 22449 --yes --i-understand
+eagle-flightplan withdraw --term 202620                             # dry run
+eagle-flightplan withdraw --term 202620 --yes --i-understand
+```
+
+Live runs also require the exact term typed on stdin (interactive) or
+`--confirm-term 202620` (non-interactive). The MCP tools are
+`unw_drop_course(term, crn, confirm)` and
+`unw_withdraw(term, confirm, confirm_term)`; both refuse without confirmation and
+return the intended effect plus the current registered load.
 
 ## Snipe modes
 
@@ -151,16 +202,20 @@ Only `registered`, `already_registered`, `waitlist_joined`, `dry_run` and
 
 ## Hard safety rules
 
-* Never drop or withdraw (no such calls exist in the code path).
-* Never retry after a success: the run returns immediately.
+* Dropping/withdrawing happens only through the confirmed `drop`/`withdraw`
+  commands and `unw_drop_course`/`unw_withdraw`; `snipe` still never drops.
+* Never drop a CRN outside the exact requested target; a withdraw enumerates
+  every registered row first and aborts if the page set differs.
+* Never retry after a success, an unknown response or a rejection: one Submit per
+  call, then read the schedule back.
 * Never claim registration without a Save click; a staged row is not registered.
-* Never auto-accept an authorization/OLR popup or an alternate PIN.
-* Never register a CRN outside the resolved target list.
+* Never auto-accept an authorization/OLR popup, an alternate PIN or Banner's
+  conditional add/drop confirm prompt (`drop_confirm_required`).
 * One browser context per run; no parallel attempts.
 * `--live` requires both `--i-understand` **and** the exact term code typed on
-  stdin. `--yes` is not accepted as consent.
-* Dry-run is the default; a live run prints the exact target table and the term's
-  eligibility verdict before starting.
+  stdin (or `--confirm-term` when non-interactive). `--yes` alone is not consent.
+* Dry-run is the default; a live drop prints the exact CRN/load and reads the
+  schedule before and after.
 * `GET /ssb/prepareRegistration/prepareRegistration` is read-only and its HTML is
   never persisted (it contains PII: student ID, holds, curriculum).
 * Back off on 429/5xx (the Banner client already retries with jitter); do not

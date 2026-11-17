@@ -36,6 +36,7 @@ EXPECTED_TOOLS = {
     "unw_candidates",
     "unw_conflicts",
     "unw_course",
+    "unw_drop_course",
     "unw_offering_matrix",
     "unw_plan_draft",
     "unw_planning_intake",
@@ -49,6 +50,7 @@ EXPECTED_TOOLS = {
     "unw_semester_plan",
     "unw_session",
     "unw_terms",
+    "unw_withdraw",
 }
 
 
@@ -315,7 +317,7 @@ async def test_tool_count_names_and_descriptions() -> None:
     tools = await mcp_server.mcp.list_tools()
     names = {tool.name for tool in tools}
     assert names == EXPECTED_TOOLS
-    assert len(tools) == 22
+    assert len(tools) == 24
     for tool in tools:
         assert tool.description and tool.description.strip(), tool.name
         assert tool.input_schema.get("type") == "object"
@@ -652,12 +654,15 @@ async def test_write_tools_require_confirmation_arguments() -> None:
         "unw_banner_plan_add",
         "unw_banner_plan_remove",
         "unw_banner_plan_delete",
+        "unw_drop_course",
+        "unw_withdraw",
     ):
         required = tools[name].input_schema["required"]
         assert "confirm" in required, name
         assert "confirm" in (tools[name].description or "").lower()
     delete_required = tools["unw_banner_plan_delete"].input_schema["required"]
     assert "confirm_name" in delete_required
+    assert "confirm_term" in tools["unw_withdraw"].input_schema["required"]
 
 
 # --------------------------------------------------------------------------- #

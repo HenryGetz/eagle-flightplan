@@ -20,6 +20,7 @@ EXPECTED_TOOLS = {
     "unw_candidates",
     "unw_conflicts",
     "unw_course",
+    "unw_drop_course",
     "unw_offering_matrix",
     "unw_plan_draft",
     "unw_planning_intake",
@@ -33,6 +34,7 @@ EXPECTED_TOOLS = {
     "unw_semester_plan",
     "unw_session",
     "unw_terms",
+    "unw_withdraw",
 }
 
 
@@ -51,7 +53,7 @@ async def test_stdio_server_starts_without_network_or_credentials() -> None:
         listing = await client.list_tools()
         tools = {tool.name: tool for tool in listing.tools}
         assert set(tools) == EXPECTED_TOOLS
-        assert len(tools) == 22
+        assert len(tools) == 24
         for tool in tools.values():
             assert (tool.description or "").strip(), tool.name
             assert tool.input_schema.get("type") == "object"
@@ -61,6 +63,17 @@ async def test_stdio_server_starts_without_network_or_credentials() -> None:
             "confirm",
             "confirm_name",
         ]
+        assert tools["unw_drop_course"].input_schema["required"] == [
+            "term",
+            "crn",
+            "confirm",
+        ]
+        assert tools["unw_withdraw"].input_schema["required"] == [
+            "term",
+            "confirm",
+            "confirm_term",
+        ]
         instructions = client.instructions or ""
         assert 30 <= len(instructions.splitlines()) <= 60
         assert "Confirmation is ENFORCED" in instructions
+        assert "unw_drop_course" in instructions and "unw_withdraw" in instructions

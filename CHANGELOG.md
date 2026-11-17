@@ -8,7 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- `unw_planning_intake` (22 tools): a READ-ONLY planning interview returning the
+- Confirmed drop/withdraw support (24 tools). `unw_drop_course(term, crn,
+  confirm)` drops exactly one currently registered CRN and `unw_withdraw(term,
+  confirm, confirm_term)` withdraws every registered CRN in a term; both refuse
+  without their required confirmation, reject non-registered targets, select
+  Banner's live `Web Dropped` (`DW`) row action, click Submit once, capture the
+  request/response, and return a before/after schedule diff read from Banner. A
+  rejection, confirmation prompt or unclear response is never retried. CLI:
+  `eagle-flightplan drop --crn ...` / `withdraw` (dry-run default; `--yes` plus
+  `--i-understand` and the typed term or `--confirm-term` for live). Banner has no
+  separate withdraw action; withdrawing is `DW` on every enumerated row.
+- `unw_planning_intake`: a READ-ONLY planning interview returning the
   audit facts (programs, catalog year, credits, anticipated graduation, standing,
   `holds: null` = unknown), the current/next term with the personal ticket
   start/end/eligibility, a structured `questions` list (credit load, blocked days,
