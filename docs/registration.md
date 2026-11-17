@@ -112,7 +112,9 @@ The live page for 202620 was inspected read-only (no action selected, no Submit)
   differs (`schedule_changed`).
 
 The implementation (`src/eagle_flightplan/drop.py`) drives that UI: exact
-`#action-<crn>-ddl`, canonical endpoint attribute check, one Submit click, network
+`#action-<crn>-ddl`, canonical endpoint attribute check, one Submit click through a
+fresh DOM `#saveButton.click()` (a Playwright mouse click was silently swallowed
+live and emitted no request), a wait for that single response, network
 capture to `captures/registration-<term>-<drop|withdraw>-<ts>.jsonl`, and a
 before/after `submitSummaryRegistration` read. It never guesses a direct write
 endpoint. Statuses: `dropped`, `withdrawn`, `dry_run`, `not_registered`,

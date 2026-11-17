@@ -83,6 +83,7 @@ class DropOptions(BaseModel):
     live: bool = False
     i_understand: bool = False
     commit_timeout: float = 8.0
+    submit_timeout: float = 8.0
     wait_ms: int = 2500
     expected_crns: list[str] = Field(default_factory=list)
 
@@ -334,6 +335,40 @@ def _set_action(select, value: str = DROP_ACTION) -> None:
     )
 
 
+def _click_submit(page) -> None:
+    """Click the real Submit button through the DOM, once.
+
+    The Playwright mouse click was observed to be swallowed on the live page even
+    with an enabled, unobstructed button (no request and no error). A DOM ``click``
+    on the fresh ``#saveButton`` invokes Banner's delegated jQuery handler and was
+    verified to emit ``submitRegistration/batch``. No retry: the caller clicks at
+    most once.
+    """
+    page.evaluate(
+        """() => {
+            const button = document.querySelector('#saveButton');
+            if (!button) throw new Error('#saveButton is missing');
+            button.click();
+        }"""
+    )
+
+
+def _wait_for_submit(
+    responses: list[dict[str, Any]] | None,
+    mark: int,
+    *,
+    timeout: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> None:
+    """Wait for the single Submit response; never retries the click."""
+    if responses is None:
+        return
+    deadline = clock() + max(0.0, timeout)
+    while len(responses) <= mark and clock() < deadline:
+        sleep(0.25)
+
+
 def _submit_endpoint(save) -> str:
     try:
         return str(save.get_attribute("data-registration-endpoint") or "")
@@ -354,6 +389,7 @@ def execute_drop(
     dry_run: bool = False,
     responses: list[dict[str, Any]] | None = None,
     commit_timeout: float = 8.0,
+    submit_timeout: float = 8.0,
     wait_ms: int = 2500,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
@@ -422,7 +458,7 @@ def execute_drop(
 
     mark = len(responses) if responses is not None else 0
     try:
-        save.click()
+        _click_submit(page)
     except Exception as exc:
         result.status = "drop_not_submitted"
         result.reason = (
@@ -432,6 +468,13 @@ def execute_drop(
         return result
 
     result.writes_performed = ["drop_course"]
+    _wait_for_submit(
+        responses,
+        mark,
+        timeout=submit_timeout,
+        sleep=sleep,
+        clock=clock,
+    )
     page.wait_for_timeout(wait_ms)
     new_responses = responses[mark:] if responses is not None else []
     payload = _last_submit(new_responses)
@@ -455,6 +498,7 @@ def execute_withdraw(
     dry_run: bool = False,
     responses: list[dict[str, Any]] | None = None,
     commit_timeout: float = 8.0,
+    submit_timeout: float = 8.0,
     wait_ms: int = 2500,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
@@ -524,7 +568,7 @@ def execute_withdraw(
 
     mark = len(responses) if responses is not None else 0
     try:
-        save.click()
+        _click_submit(page)
     except Exception as exc:
         result.status = "drop_not_submitted"
         result.reason = (
@@ -533,6 +577,13 @@ def execute_withdraw(
         return result
 
     result.writes_performed = ["withdraw"]
+    _wait_for_submit(
+        responses,
+        mark,
+        timeout=submit_timeout,
+        sleep=sleep,
+        clock=clock,
+    )
     page.wait_for_timeout(wait_ms)
     new_responses = responses[mark:] if responses is not None else []
     payload = _last_submit(new_responses)
@@ -840,6 +891,7 @@ def run_drop(
                     str(options.crn),
                     responses=responses,
                     commit_timeout=options.commit_timeout,
+                    submit_timeout=options.submit_timeout,
                     wait_ms=options.wait_ms,
                 )
             else:
@@ -849,6 +901,7 @@ def run_drop(
                     expected_crns=[row.crn for row in before],
                     responses=responses,
                     commit_timeout=options.commit_timeout,
+                    submit_timeout=options.submit_timeout,
                     wait_ms=options.wait_ms,
                 )
         except (SessionExpiredError, AuthError) as exc:

@@ -126,6 +126,7 @@ class FakePage:
         self.selected_values: dict[str, str] = {}
         self.clicks: list[str] = []
         self.waits = 0
+        self.dom_clicks = 0
 
     def locator(self, selector):
         if selector == "select.actionDdl":
@@ -136,6 +137,12 @@ class FakePage:
         if selector == "#saveButton":
             return FakeSave(self)
         return FakeCollection([])
+
+    def evaluate(self, script, arg=None):
+        if "#saveButton" in script:
+            self.dom_clicks += 1
+            self.locator("#saveButton").click()
+        return None
 
     def wait_for_timeout(self, _ms):
         self.waits += 1
@@ -201,6 +208,7 @@ def test_drop_touches_only_the_exact_crn_and_submits_once():
     assert page.selected_values.get("20737") is None
     assert page.selected_values.get("21500") is None
     assert page.clicks == ["Submit"]
+    assert page.dom_clicks == 1
     assert result.status == "submitted"
     assert result.response_status == "dropped"
     assert result.writes_performed == ["drop_course"]
@@ -268,7 +276,9 @@ def test_banner_rejection_keeps_the_exact_message():
 
 def test_unknown_outcome_is_not_promoted_and_not_retried():
     page = FakePage({"22449": "Registered"}, response=None, after={})
-    execution = execute_drop(page, TERM, "22449", responses=page.responses)
+    execution = execute_drop(
+        page, TERM, "22449", responses=page.responses, submit_timeout=0
+    )
     assert execution.response_status == "unknown"
     result = finalize_drop(
         "drop", TERM, "22449", execution, [course("22449")], [course("22449")]

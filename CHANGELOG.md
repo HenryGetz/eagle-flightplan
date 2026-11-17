@@ -56,6 +56,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `unw_drop_course` / `unw_withdraw` now click `#saveButton` through a fresh DOM
+  `element.click()` instead of a Playwright mouse click. The live page accepted
+  the mouse click without emitting `submitRegistration/batch` (a swallowed click,
+  not a Banner rejection); the DOM click invokes Banner's delegated jQuery handler
+  and was verified to emit the POST. The run now waits for that single response
+  (short timeout) instead of sleeping blind, and still never retries.
 - `unw_roadmap` rows expose `constraints_unenforced` and
   `all_selections_unscheduled` directly (hoisted from the term draft) plus a
   top-level `constraints_unenforced` summary and a matching `risks` line, so a
